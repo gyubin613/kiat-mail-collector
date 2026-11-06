@@ -1,10 +1,29 @@
 // 공통 자료형
 
+export type InstitutionRole = "주관기관" | "참여기관";
+
+/** 과제에 참여하는 기관 (과제관리 현황의 한 줄) */
+export interface Institution {
+  /** `${과제번호}::${기관명}` */
+  key: string;
+  projectId: string;
+  name: string;
+  role: InstitutionRole;
+  country: string;
+  /** 해외기관 여부 (독촉 메일 언어 결정) */
+  foreign: boolean;
+  /** 책임연구자 등 받는 사람 이름 */
+  contactName: string;
+  emails: string[];
+}
+
 export interface Project {
   /** 과제번호 (과제 목록의 고유값) */
   id: string;
   /** 과제명 */
   name: string;
+  /** 영문 과제명 */
+  nameEn: string;
   /** 주관기관 (국내) */
   leadOrg: string;
   /** 해외 참여기관 */
@@ -19,6 +38,8 @@ export interface Project {
   contacts: string[];
   /** 그중 해외기관 연락처 */
   partnerContacts: string[];
+  /** 참여 기관 (주관기관 포함) */
+  institutions: Institution[];
 }
 
 export interface MailAttachment {
@@ -76,6 +97,9 @@ export interface MailResult {
   reasons: string[];
   candidates: Candidate[];
   attachments: AttachmentResult[];
+  /** 보낸 기관 (과제 안의 기관 key). 알 수 없으면 null */
+  institutionKey: string | null;
+  institutionReason: string;
   /** 본문 요약 (AI 사용 시) 또는 본문 앞부분 */
   summary: string;
   /** 담당자가 직접 고쳤는지 */
@@ -84,9 +108,14 @@ export interface MailResult {
   aiAssisted: boolean;
 }
 
+/** 서류를 누가 내야 하는지 */
+export type DocScope = "주관기관" | "참여기관" | "모든 기관" | "과제 공통";
+
 export interface Settings {
-  /** 과제별로 받아야 하는 서류 종류 */
+  /** 받아야 하는 서류 종류 */
   requiredDocs: string[];
+  /** 서류별 제출 대상. "과제 공통"은 과제당 1부(누가 내도 됨) */
+  docScope: Record<string, DocScope>;
   /** 서류 종류별 인식 키워드 */
   docKeywords: Record<string, string[]>;
   /** 업무 메일 판단 키워드 (제목·본문·첨부명) */

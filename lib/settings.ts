@@ -2,6 +2,7 @@ import type { Settings } from "./types";
 
 export const DEFAULT_SETTINGS: Settings = {
   requiredDocs: ["참여확약서", "협약서", "재무증빙"],
+  docScope: { 참여확약서: "참여기관", 협약서: "과제 공통", 재무증빙: "주관기관" },
   docKeywords: {
     참여확약서: [
       "참여확약서",

@@ -1,17 +1,19 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AiClassifyRequest, AiClassifyResult } from "@/lib/ai/classify";
 import { buildWorkbook, buildZip, exportBaseName } from "@/lib/exporter";
 import { parseAll, type LoadedFile } from "@/lib/mail";
-import { matchAll, matchMail, stripQuoted } from "@/lib/matcher";
+import { matchAll, matchInstitution, matchMail, stripQuoted } from "@/lib/matcher";
 import { planFiles, projectStatus, STATUS_LABEL } from "@/lib/organize";
-import { rowsToProjects } from "@/lib/projects";
+import { rowsToProjects, type ColumnReport } from "@/lib/projects";
+import { loadLog, logSummary, saveLog, type ReminderLogEntry } from "@/lib/reminder";
 import { readSheet } from "@/lib/readSheet";
 import { DEFAULT_SETTINGS } from "@/lib/settings";
-import type { MailResult, MatchStatus, ParsedMail, Project } from "@/lib/types";
+import type { DocScope, MailResult, MatchStatus, ParsedMail, Project, Settings } from "@/lib/types";
 import { Detail } from "./Detail";
 import { Dropzone } from "./Dropzone";
 import { Ledger } from "./Ledger";
+import { Reminders, type MailStatus } from "./Reminders";
 import { StatusMatrix } from "./StatusMatrix";
 
 type Filter = "all" | MatchStatus;
@@ -41,9 +43,9 @@ interface AiStatus {
 }
 
 export default function App() {
-  const settings = DEFAULT_SETTINGS;
+  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [projectInfo, setProjectInfo] = useState<{ name: string; warnings: string[] } | null>(null);
+  const [projectInfo, setProjectInfo] = useState<{ name: string; warnings: string[]; columns?: ColumnReport; format?: string } | null>(null);
   const [mails, setMails] = useState<ParsedMail[]>([]);
   const [mailInfo, setMailInfo] = useState<{ names: string; errors: string[]; skipped: string[] } | null>(null);
   const [results, setResults] = useState<MailResult[]>([]);
@@ -56,6 +58,11 @@ export default function App() {
   const [aiBusy, setAiBusy] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [mailStatus, setMailStatus] = useState<MailStatus | null>(null);
+  const [reminderLog, setReminderLog] = useState<ReminderLogEntry[]>([]);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [composing, setComposing] = useState(false);
+  const pendingUnpick = useRef<string[]>([]);
 
   const say = useCallback((msg: string) => {
     setToast(msg);
@@ -67,6 +74,11 @@ export default function App() {
       .then((r) => r.json())
       .then(setAi)
       .catch(() => setAi({ enabled: false, label: "AI 미설정", passwordRequired: false }));
+    fetch("/api/mail/status")
+      .then((r) => r.json())
+      .then(setMailStatus)
+      .catch(() => setMailStatus(null));
+    setReminderLog(loadLog());
     try {
       setPassword(sessionStorage.getItem("app-pw") || "");
     } catch {
@@ -101,13 +113,11 @@ export default function App() {
     try {
       setBusy("과제 목록을 읽는 중");
       const rows = await readSheet(f.bytes, f.name);
-      const { projects: ps, warnings } = rowsToProjects(rows);
-      if (!ps.length) {
-        setProjectInfo({ name: f.name, warnings });
-        return;
-      }
+      const { projects: ps, warnings, columns, format } = rowsToProjects(rows);
+      setProjectInfo({ name: f.name, warnings, columns, format });
+      if (!ps.length) return;
       setProjects(ps);
-      setProjectInfo({ name: f.name, warnings });
+      setPicked(new Set());
     } catch (e) {
       setProjectInfo({ name: f.name, warnings: [`파일을 읽지 못했습니다: ${(e as Error).message}`] });
     } finally {
@@ -134,7 +144,7 @@ export default function App() {
 
   const loadSamples = async (which: "projects" | "mails" | "both") => {
     try {
-      if (which !== "mails") await loadProjects([await fetchSample("/samples/과제목록_가상.xlsx")]);
+      if (which !== "mails") await loadProjects([await fetchSample("/samples/과제관리현황_가상.xlsx")]);
       if (which !== "projects") await loadMails([await fetchSample("/samples/가상메일.zip")]);
     } catch (e) {
       say((e as Error).message);
@@ -144,14 +154,33 @@ export default function App() {
   const update = (mailId: string, fn: (r: MailResult) => MailResult) =>
     setResults((rs) => rs.map((r) => (r.mailId === mailId ? fn(r) : r)));
 
-  const assign = (mailId: string, projectId: string | null) =>
+  const assign = (mailId: string, projectId: string | null) => {
+    const mail = mailsById.get(mailId);
+    const inst = mail ? matchInstitution(mail, projectId ? projectsById.get(projectId) : undefined) : { key: null, reason: "" };
     update(mailId, (r) => ({
       ...r,
       projectId,
+      institutionKey: inst.key,
+      institutionReason: inst.reason,
       relevant: true,
       status: projectId ? "confirmed" : "unmatched",
       edited: true,
     }));
+  };
+
+  const logReminders = (entries: ReminderLogEntry[]) => {
+    const done = entries.filter((e) => e.ok && e.mode !== "시험 발송").map((e) => e.key);
+    if (done.length) {
+      // 보낸 기관은 다음 독촉 선택에서 뺀다 (창을 닫을 때 반영)
+      pendingUnpick.current.push(...done);
+    }
+    setReminderLog((cur) => {
+      const next = [...cur, ...entries];
+      saveLog(next);
+      return next;
+    });
+  };
+  const sentSummary = useMemo(() => logSummary(reminderLog), [reminderLog]);
 
   const counts = useMemo(() => {
     const c: Record<Filter, number> = { all: results.length, auto: 0, confirmed: 0, review: 0, unmatched: 0, excluded: 0 };
@@ -175,6 +204,8 @@ export default function App() {
   }, [results, filter, query, mailsById, projectsById]);
 
   const status = useMemo(() => projectStatus(mails, results, projects, settings), [mails, results, projects, settings]);
+
+  const cur0 = (mailId: string) => results.find((x) => x.mailId === mailId)?.projectId ?? null;
 
   const askAi = async (mailId: string) => {
     const mail = mailsById.get(mailId);
@@ -203,9 +234,13 @@ export default function App() {
       });
       const data = (await res.json()) as AiClassifyResult & { error?: string };
       if (!res.ok) throw new Error(data.error || `오류 ${res.status}`);
+      const newPid = data.projectId ?? cur0(mailId);
+      const instAi = matchInstitution(mail, newPid ? projectsById.get(newPid) : undefined);
       update(mailId, (cur) => ({
         ...cur,
         projectId: data.projectId ?? cur.projectId,
+        institutionKey: data.projectId ? instAi.key : cur.institutionKey,
+        institutionReason: data.projectId ? instAi.reason : cur.institutionReason,
         status: data.projectId ? (data.confidence >= 85 ? "auto" : "review") : cur.status,
         confidence: data.projectId ? data.confidence : cur.confidence,
         reasons: data.reason ? [...cur.reasons.filter((x) => !x.startsWith("AI:")), `AI: ${data.reason}`] : cur.reasons,
@@ -238,7 +273,7 @@ export default function App() {
   const exportExcel = async () => {
     setBusy("엑셀을 만드는 중");
     try {
-      const input = { mails, results, projects, settings };
+      const input = { mails, results, projects, settings, reminderLog };
       const bytes = await buildWorkbook(input, planFiles(mails, results, projects));
       download(bytes, `${exportBaseName()}.xlsx`, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     } finally {
@@ -249,7 +284,7 @@ export default function App() {
   const exportZip = async () => {
     setBusy("폴더를 정리하는 중");
     try {
-      const { zip, plan } = await buildZip({ mails, results, projects, settings });
+      const { zip, plan } = await buildZip({ mails, results, projects, settings, reminderLog });
       download(zip, `${exportBaseName()}.zip`, "application/zip");
       say(`파일 ${plan.length}개를 과제별 폴더로 정리했습니다.`);
     } finally {
@@ -271,7 +306,7 @@ export default function App() {
             </p>
           </div>
           <div className="privacy">
-            올린 파일은 이 브라우저 안에서만 처리되고 서버에 저장되지 않습니다. AI 판단을 쓰면 메일 제목, 본문 일부, 첨부파일 이름만 AI로 보냅니다.
+            올린 파일은 이 브라우저 안에서만 처리되고 서버에 저장되지 않습니다. 독촉 메일을 보낼 때만 받는 사람 주소와 메일 내용이 발송 서버를 거치고, AI 판단을 쓰면 메일 제목·본문 일부·첨부파일 이름만 AI로 보냅니다.
           </div>
         </div>
       </header>
@@ -280,12 +315,12 @@ export default function App() {
         <div className={`step${projects.length ? " done" : ""}`}>
           <div className="step-head">
             <span className="step-no">1</span>
-            <span className="step-title">과제 목록</span>
+            <span className="step-title">과제관리 현황</span>
           </div>
           <Dropzone
             accept=".xlsx,.csv"
-            label="과제 목록 엑셀 올리기"
-            hint="과제번호, 과제명, 기관, 이메일 열이 있으면 됩니다"
+            label="과제관리 현황 엑셀 올리기"
+            hint="실에서 쓰는 현황 파일 그대로 올리세요. 전화번호·주소 같은 열은 읽지 않습니다"
             onFiles={loadProjects}
           />
           <div className="step-result">
@@ -293,8 +328,24 @@ export default function App() {
               <>
                 {projects.length > 0 && (
                   <span>
-                    {projectInfo.name}에서 과제 <b className="num">{projects.length}</b>개를 불러왔습니다.
+                    {projectInfo.name}에서 과제 <b className="num">{projects.length}</b>개, 기관{" "}
+                    <b className="num">{projects.reduce((n, p) => n + p.institutions.length, 0)}</b>곳을 불러왔습니다.
                   </span>
+                )}
+                {projectInfo.columns && projectInfo.columns.dropped.length > 0 && (
+                  <details className="cols">
+                    <summary>읽지 않은 열 {projectInfo.columns.dropped.length}개</summary>
+                    <ul>
+                      {projectInfo.columns.dropped.map((d) => (
+                        <li key={d.header}>
+                          {d.header}: {d.reason}
+                        </li>
+                      ))}
+                    </ul>
+                    <p>
+                      읽은 열: {projectInfo.columns.used.map((u) => (u.header === u.as ? u.header : `${u.header}(${u.as})`)).join(", ")}
+                    </p>
+                  </details>
                 )}
                 {projectInfo.warnings.map((w) => (
                   <span key={w} className="warn">
@@ -304,7 +355,7 @@ export default function App() {
               </>
             ) : (
               <button className="linkish" onClick={() => loadSamples("projects")}>
-                가상 과제 목록으로 해보기
+                가상 과제관리 현황으로 해보기
               </button>
             )}
           </div>
@@ -379,8 +430,8 @@ export default function App() {
       <main className="work">
         {!mails.length || !projects.length ? (
           <div className="empty">
-            <p>{!projects.length ? "먼저 과제 목록을 올려 주세요." : "이제 받은 메일 파일을 올려 주세요."}</p>
-            <p style={{ fontSize: 13 }}>과제 목록과 메일이 모두 있어야 과제별로 분류할 수 있습니다.</p>
+            <p>{!projects.length ? "먼저 과제관리 현황 엑셀을 올려 주세요." : "이제 받은 메일 파일을 올려 주세요."}</p>
+            <p style={{ fontSize: 13 }}>과제관리 현황과 메일이 모두 있어야 기관별로 분류할 수 있습니다.</p>
           </div>
         ) : (
           <>
@@ -390,13 +441,11 @@ export default function App() {
                   메일 접수대장
                 </button>
                 <button aria-pressed={view === "status"} onClick={() => setView("status")}>
-                  과제별 제출현황
+                  기관별 제출현황
                 </button>
               </div>
               <span className="spacer" />
-              {ai?.enabled ? (
-                <>
-                  {ai.passwordRequired && (
+              {(ai?.passwordRequired || mailStatus?.passwordRequired) && (
                     <label className="pw">
                       접속 비밀번호
                       <input
@@ -412,7 +461,9 @@ export default function App() {
                         }}
                       />
                     </label>
-                  )}
+              )}
+              {ai?.enabled ? (
+                <>
                   <button className="btn" onClick={askAiAll} disabled={aiBusy.size > 0 || remaining === 0}>
                     {aiBusy.size > 0 ? `AI가 읽는 중 (${aiBusy.size})` : `확인 필요·미분류 ${remaining}통 AI에게 맡기기`}
                   </button>
@@ -462,6 +513,9 @@ export default function App() {
                       aiBusy={aiBusy.has(sel.mail.id)}
                       onClose={() => setSelected(null)}
                       onAssign={(pid) => assign(sel.mail!.id, pid)}
+                      onInstitution={(key) =>
+                        update(sel.mail!.id, (r) => ({ ...r, institutionKey: key, institutionReason: key ? "담당자 지정" : "", edited: true }))
+                      }
                       onConfirm={() => update(sel.mail!.id, (r) => ({ ...r, status: "confirmed", edited: true }))}
                       onDocType={(i, type) =>
                         update(sel.mail!.id, (r) => ({
@@ -497,12 +551,26 @@ export default function App() {
             ) : (
               <StatusMatrix
                 rows={status}
-                docs={settings.requiredDocs}
+                settings={settings}
+                onScopeChange={(doc: string, scope: DocScope) => setSettings((s) => ({ ...s, docScope: { ...s.docScope, [doc]: scope } }))}
+                sent={sentSummary}
+                selected={picked}
+                onSelect={(keys, on) =>
+                  setPicked((cur) => {
+                    const n = new Set(cur);
+                    for (const k of keys) {
+                      if (on) n.add(k);
+                      else n.delete(k);
+                    }
+                    return n;
+                  })
+                }
                 onOpenProject={(id) => {
                   setView("ledger");
                   setFilter("all");
                   setQuery(id);
                 }}
+                onCompose={() => setComposing(true)}
               />
             )}
 
@@ -527,6 +595,35 @@ export default function App() {
           </>
         )}
       </main>
+
+      {composing && (
+        <Reminders
+          rows={status.flatMap((p) => p.institutions).filter((r) => picked.has(r.institution.key) && r.remindDocs.length > 0)}
+          sent={sentSummary}
+          mail={mailStatus}
+          password={password}
+          onClose={() => {
+            const sentKeys = pendingUnpick.current;
+            pendingUnpick.current = [];
+            if (sentKeys.length)
+              setPicked((cur) => {
+                const n = new Set(cur);
+                for (const k of sentKeys) n.delete(k);
+                return n;
+              });
+            setComposing(false);
+          }}
+          onLogged={logReminders}
+          onRemove={(k) =>
+            setPicked((cur) => {
+              const n = new Set(cur);
+              n.delete(k);
+              if (!n.size) setComposing(false);
+              return n;
+            })
+          }
+        />
+      )}
 
       {(busy || toast) && (
         <div className="toast" role="status">

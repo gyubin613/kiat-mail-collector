@@ -19,6 +19,7 @@ export function Detail({
   aiBusy,
   onClose,
   onAssign,
+  onInstitution,
   onConfirm,
   onDocType,
   onExclude,
@@ -34,6 +35,7 @@ export function Detail({
   aiBusy: boolean;
   onClose: () => void;
   onAssign: (projectId: string | null) => void;
+  onInstitution: (key: string | null) => void;
   onConfirm: () => void;
   onDocType: (index: number, type: string) => void;
   onExclude: () => void;
@@ -99,6 +101,24 @@ export function Detail({
             </div>
           ) : (
             <div style={{ fontSize: 13.5, color: "var(--ink-soft)" }}>아직 과제가 지정되지 않았습니다.</div>
+          )}
+          {current && current.institutions.length > 0 && (
+            <label className="inst-pick">
+              보낸 기관
+              <select
+                className="inline-select"
+                value={result.institutionKey ?? ""}
+                onChange={(e) => onInstitution(e.target.value || null)}
+              >
+                <option value="">알 수 없음 (선택해 주세요)</option>
+                {current.institutions.map((i) => (
+                  <option key={i.key} value={i.key}>
+                    {i.name} ({i.role === "주관기관" ? "주관" : "참여"})
+                  </option>
+                ))}
+              </select>
+              {result.institutionReason && <small>{result.institutionReason}</small>}
+            </label>
           )}
           {result.reasons.length > 0 && (
             <ul className="reasons" style={{ marginTop: 8 }}>

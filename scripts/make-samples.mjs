@@ -84,24 +84,54 @@ for (let i = 0; i < 30; i++) {
   });
 }
 
+const TOPICS_EN = [
+  "Precision assembly automation with collaborative robots",
+  "Continuous manufacturing process for biopharmaceuticals",
+  "Autonomous small-scale logistics mobility platform",
+  "Next-generation solid electrolyte battery materials",
+  "Ultra-light carbon composite forming technology",
+  "Heat dissipation packaging for power semiconductors",
+  "Real-time inspection system with industrial drones",
+  "Wearable biosignal monitoring technology",
+  "Environmental control for vertical smart farms",
+  "Durability improvement of green hydrogen electrolysis stacks",
+];
+const UNIVS = ["가람대학교 산학협력단", "한빛과학기술원", "누리대학교 산학협력단"];
+
+// 실에서 쓰는 과제관리 현황처럼 기관별로 한 줄씩 (전화번호·주소·사업자번호 등 쓰지 않는 열 포함)
 async function writeProjectList() {
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet("과제목록");
+  const ws = wb.addWorksheet("과제관리현황");
   ws.columns = [
     { header: "No", key: "no", width: 5 },
     { header: "과제번호", key: "id", width: 12 },
-    { header: "과제명", key: "name", width: 40 },
-    { header: "주관기관", key: "leadOrg", width: 20 },
-    { header: "주관기관 이메일", key: "leadEmail", width: 32 },
-    { header: "해외기관", key: "partnerOrg", width: 36 },
+    { header: "과제제목", key: "name", width: 40 },
+    { header: "과제제목(영문)", key: "nameEn", width: 48 },
+    { header: "기관명", key: "org", width: 34 },
+    { header: "기관구분", key: "role", width: 10 },
     { header: "국가", key: "country", width: 12 },
-    { header: "해외기관 이메일", key: "partnerEmail", width: 34 },
-    { header: "담당자", key: "manager", width: 8 },
-    { header: "연도", key: "year", width: 8 },
+    { header: "사업자등록번호", key: "biz", width: 16 },
+    { header: "주소", key: "addr", width: 34 },
+    { header: "책임연구자", key: "pi", width: 16 },
+    { header: "전화번호", key: "tel", width: 16 },
+    { header: "이메일", key: "email", width: 34 },
+    { header: "KIAT 담당자", key: "manager", width: 10 },
+    { header: "협약연도", key: "year", width: 9 },
   ];
-  projects.forEach((p, i) => ws.addRow({ no: i + 1, ...p }));
+  let no = 0;
+  projects.forEach((p, i) => {
+    const topicIdx = (i + Math.floor(i / 10)) % 10;
+    const variantEn = ["", " (advanced)", " (demonstration)"][Math.floor(i / 10)];
+    const common = { id: p.id, name: p.name, nameEn: TOPICS_EN[topicIdx] + variantEn, manager: p.manager, year: p.year };
+    ws.addRow({ no: ++no, ...common, org: p.leadOrg, role: "주관", country: "대한민국", biz: `${100 + i}-81-${String(10000 + i * 37).slice(0, 5)}`, addr: "서울특별시 가상구 가상로 1", pi: p.leadName, tel: `02-${3000 + i}-${String(1000 + i).padStart(4, "0")}`, email: p.leadEmail });
+    ws.addRow({ no: ++no, ...common, org: p.partnerOrg, role: "참여(해외)", country: p.country, biz: "", addr: "(해외 주소 생략)", pi: p.partnerName, tel: `+49 30 ${1000 + i} ${2000 + i}`, email: p.partnerEmail });
+    if (i % 5 === 2) {
+      const u = UNIVS[i % 3];
+      ws.addRow({ no: ++no, ...common, org: u, role: "참여", country: "대한민국", biz: `${200 + i}-82-12345`, addr: "대전광역시 가상구 대학로 99", pi: "김연구", tel: `042-${600 + i}-1234`, email: `pi${i}@univ${i % 3}.example.ac.kr` });
+    }
+  });
   ws.getRow(1).font = { bold: true };
-  await wb.xlsx.writeFile(join(OUT, "과제목록_가상.xlsx"));
+  await wb.xlsx.writeFile(join(OUT, "과제관리현황_가상.xlsx"));
 }
 
 // ---------- 가상 PDF ----------
