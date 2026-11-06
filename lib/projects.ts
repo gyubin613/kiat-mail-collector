@@ -93,7 +93,7 @@ export function detectLayout(headers: string[]): Layout {
   return { field, emails, report };
 }
 
-function scrub(v: string): string {
+export function scrub(v: string): string {
   return (v || "")
     .replace(PHONE_RE, "")
     .replace(/\(\s*\)|\[\s*\]/g, "")

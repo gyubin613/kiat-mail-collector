@@ -70,13 +70,19 @@ export function Ledger({
                   <span className="subject" title={mail.subject}>
                     {mail.subject}
                   </span>
+                  {mail.stub && <span className="chip etc">기록만</span>}
                   {mail.attachments.length > 0 && (
                     <div className="chips">
-                      {result.attachments.map((a) => (
-                        <span key={a.index} className={`chip ${a.docType === "기타" ? "etc" : "doc"}`} title={a.filename}>
-                          {a.docType}
-                        </span>
-                      ))}
+                      {result.attachments.map((a) => {
+                        const fix = a.check?.state === "보완 필요";
+                        const check = !fix && a.check?.state === "미점검" && a.check?.auto?.suggestion === "fix";
+                        return (
+                          <span key={a.index} className={`chip ${a.docType === "기타" ? "etc" : "doc"}${fix ? " fix" : check ? " check" : ""}`} title={a.filename}>
+                            {a.docType}
+                            {fix ? " 보완" : check ? " 점검" : a.check?.state === "이상 없음" ? " 확인" : ""}
+                          </span>
+                        );
+                      })}
                     </div>
                   )}
                 </td>

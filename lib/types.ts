@@ -46,12 +46,18 @@ export interface MailAttachment {
   filename: string;
   mimeType: string;
   size: number;
+  /** 파일 내용. 이전 작업에서 기록만 남은 메일이면 빈 배열 */
   content: Uint8Array;
+  /** 내용 해시 (같은 파일 중복 확인용) */
+  sha256: string;
 }
 
 export interface ParsedMail {
-  /** 화면·엑셀에서 쓰는 순번 기반 식별자 */
+  /** 메일 고유 키 (Message-ID 또는 원문 해시 기반, 접수대장 키) */
   id: string;
+  messageId: string;
+  /** 이전 작업에서 기록만 남아 원문·첨부 내용이 없는 메일 */
+  stub?: boolean;
   /** 원본 파일명 (.eml) */
   sourceName: string;
   fromName: string;
@@ -79,11 +85,37 @@ export interface Candidate {
 /** auto: 자동 분류, confirmed: 담당자 확인, review: 확인 필요, unmatched: 미분류, excluded: 대상 아님 */
 export type MatchStatus = "auto" | "confirmed" | "review" | "unmatched" | "excluded";
 
+export type CheckState = "미점검" | "이상 없음" | "보완 필요";
+
+export interface CheckItem {
+  label: string;
+  /** true 확인됨, false 없음, null 판단 불가 */
+  ok: boolean | null;
+  detail: string;
+}
+
+export interface DocCheck {
+  /** 자동 점검 결과 (브라우저에서 PDF 글자를 읽어 판단) */
+  auto?: { kind: "text" | "scan" | "other" | "error"; items: CheckItem[]; suggestion: "ok" | "fix" | "manual" };
+  state: CheckState;
+  note: string;
+  by?: string;
+  at?: string;
+}
+
+export type KpassState = "등록 대기" | "등록 완료" | "해당 없음";
+
 export interface AttachmentResult {
   index: number;
   filename: string;
   docType: DocType;
   docReason: string;
+  sha256?: string;
+  size?: number;
+  check?: DocCheck;
+  kpass?: KpassState;
+  kpassAt?: string;
+  kpassBy?: string;
 }
 
 export interface MailResult {
@@ -114,6 +146,14 @@ export type DocScope = "주관기관" | "참여기관" | "모든 기관" | "과�
 export interface Settings {
   /** 받아야 하는 서류 종류 */
   requiredDocs: string[];
+  /** 서류별 제출 기한 YYYY-MM-DD (없으면 기한 없음) */
+  deadlines: Record<string, string>;
+  /** K-PASS 운영 중단 기간: 이 기간에 메일로 받은 서류는 'K-PASS 등록 대기' */
+  kpassWindow: { from: string; to: string };
+  /** 서류를 받을 메일 주소 (안내·독촉 메일에 들어감) */
+  submitTo: string;
+  /** 수집 메일함에서 이 실이 가져올 폴더 */
+  imapFolder: string;
   /** 서류별 제출 대상. "과제 공통"은 과제당 1부(누가 내도 됨) */
   docScope: Record<string, DocScope>;
   /** 서류 종류별 인식 키워드 */

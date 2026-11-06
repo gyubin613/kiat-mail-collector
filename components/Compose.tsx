@@ -2,63 +2,72 @@
 import { useEffect, useMemo, useState } from "react";
 import type { InstitutionStatusRow } from "@/lib/organize";
 import {
-  buildDraft,
+  buildMessage,
   mailtoHref,
   parseRecipients,
   type Lang,
+  type MailKind,
   type ReminderDraft,
   type ReminderLogEntry,
   type ReminderOptions,
 } from "@/lib/reminder";
+import type { Settings } from "@/lib/types";
 
 export interface MailStatus {
   enabled: boolean;
   from: string;
   allowAll: boolean;
   allowedHint: string;
-  passwordRequired: boolean;
 }
 
-const OPT_KEY = "kiat-reminder-options-v1";
+const SIG_KEY = "kmc-signature-v1";
 
-function defaultDeadline() {
-  const d = new Date(Date.now() + 9 * 3600 * 1000 + 7 * 86400 * 1000);
-  return d.toISOString().slice(0, 10);
+function plusDays(n: number) {
+  return new Date(Date.now() + 9 * 3600 * 1000 + n * 86400 * 1000).toISOString().slice(0, 10);
 }
 
-function loadOptions(): ReminderOptions {
-  const base: ReminderOptions = {
-    deadline: defaultDeadline(),
-    submitTo: "",
-    signature: "한국산업기술진흥원 국제협력전략실\n담당자 ",
-    kpassClosed: true,
-  };
+function initialOptions(kind: MailKind, rows: InstitutionStatusRow[], settings: Settings, dept: string, user: string): ReminderOptions {
+  const docs = [...new Set(rows.flatMap((r) => (kind === "독촉" ? r.remindDocs : kind === "보완 요청" ? r.fixDocs.map((f) => f.doc) : r.remindDocs)))];
+  const today = plusDays(0);
+  const set = docs.map((d) => settings.deadlines[d]).filter((d): d is string => !!d && d >= today).sort();
+  let signature = `한국산업기술진흥원 ${dept}\n담당자 ${user}`;
   try {
-    const saved = JSON.parse(localStorage.getItem(OPT_KEY) || "{}");
-    return { ...base, ...saved, deadline: saved.deadline && saved.deadline >= base.deadline.slice(0, 10) ? saved.deadline : base.deadline };
+    signature = localStorage.getItem(SIG_KEY) || signature;
   } catch {
-    return base;
+    /* 무시 */
   }
+  return {
+    deadline: set[0] ?? plusDays(kind === "보완 요청" ? 5 : 7),
+    submitTo: settings.submitTo,
+    signature,
+    kpassClosed: !!(settings.kpassWindow.from && settings.kpassWindow.to && today >= settings.kpassWindow.from && today <= settings.kpassWindow.to),
+  };
 }
 
-export function Reminders({
+export function Compose({
+  kind,
   rows,
   sent,
   mail,
-  password,
+  settings,
+  dept,
+  user,
   onClose,
   onLogged,
   onRemove,
 }: {
+  kind: MailKind;
   rows: InstitutionStatusRow[];
   sent: Map<string, { count: number; last: string }>;
   mail: MailStatus | null;
-  password: string;
+  settings: Settings;
+  dept: string;
+  user: string;
   onClose: () => void;
   onLogged: (entries: ReminderLogEntry[]) => void;
   onRemove: (key: string) => void;
 }) {
-  const [opts, setOpts] = useState<ReminderOptions>(() => loadOptions());
+  const [opts, setOpts] = useState<ReminderOptions>(() => initialOptions(kind, rows, settings, dept, user));
   const [langs, setLangs] = useState<Record<string, Lang>>({});
   const [drafts, setDrafts] = useState<Record<string, ReminderDraft>>({});
   const [testTo, setTestTo] = useState("");
@@ -70,11 +79,11 @@ export function Reminders({
 
   useEffect(() => {
     try {
-      localStorage.setItem(OPT_KEY, JSON.stringify({ submitTo: opts.submitTo, signature: opts.signature, kpassClosed: opts.kpassClosed, deadline: opts.deadline }));
+      localStorage.setItem(SIG_KEY, opts.signature);
     } catch {
       /* 무시 */
     }
-  }, [opts]);
+  }, [opts.signature]);
 
   // 설정이 바뀌면 고치지 않은 초안만 새로 만든다
   useEffect(() => {
@@ -85,7 +94,7 @@ export function Reminders({
         const old = prev[k];
         const lang = langs[k];
         if (old?.edited && (!lang || lang === old.lang)) next[k] = old;
-        else next[k] = buildDraft(r, opts, lang, sentAtOpen.get(k)?.count ?? 0);
+        else next[k] = buildMessage(kind, r, opts, lang, sentAtOpen.get(k)?.count ?? 0);
       }
       return next;
     });
@@ -97,7 +106,7 @@ export function Reminders({
 
   const canSend = !!mail?.enabled;
   const invalid = list.filter((d) => parseRecipients(d.to).ok.length === 0 || parseRecipients(d.to).bad.length > 0);
-  const missingSubmitTo = !opts.submitTo.trim();
+  const missingSubmitTo = kind !== "접수 확인" && !opts.submitTo.trim();
 
   const send = async (targets: ReminderDraft[], test: boolean) => {
     setSending(true);
@@ -105,7 +114,7 @@ export function Reminders({
     try {
       const res = await fetch("/api/mail/send", {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(password ? { "x-app-password": password } : {}) },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           testTo: test ? testTo : undefined,
           messages: targets.map((d) => ({ id: d.key, to: parseRecipients(d.to).ok, subject: d.subject, body: d.body })),
@@ -117,6 +126,7 @@ export function Reminders({
       const entries: ReminderLogEntry[] = data.results.map((r) => {
         const d = targets.find((t) => t.key === r.id)!;
         return {
+          kind,
           key: d.key,
           projectId: d.projectId,
           institution: d.institution,
@@ -153,6 +163,7 @@ export function Reminders({
   const openMailApp = (d: ReminderDraft) => {
     onLogged([
       {
+        kind,
         key: d.key,
         projectId: d.projectId,
         institution: d.institution,
@@ -170,10 +181,12 @@ export function Reminders({
   const pending = list.filter((d) => !results[d.key]?.real);
 
   return (
-    <div className="overlay" role="dialog" aria-modal="true" aria-label="독촉 메일 쓰기">
+    <div className="overlay" role="dialog" aria-modal="true" aria-label={`${kind} 메일 쓰기`}>
       <div className="composer">
         <div className="composer-head">
-          <h2>독촉 메일 {list.length}통</h2>
+          <h2>
+            {kind} 메일 {list.length}통
+          </h2>
           <button className="close" onClick={onClose} aria-label="닫기">
             ×
           </button>
@@ -181,7 +194,7 @@ export function Reminders({
 
         <div className="composer-opts">
           <label>
-            제출 기한
+            {kind === "보완 요청" ? "다시 제출할 기한" : "제출 기한"}
             <input type="date" value={opts.deadline} onChange={(e) => setOpts({ ...opts, deadline: e.target.value })} />
           </label>
           <label className="grow">
@@ -225,8 +238,8 @@ export function Reminders({
                   <div>
                     <b>{d.institution}</b> <span className="num sub">{d.projectId}</span>
                     <div className="sub">
-                      요청 서류: {d.docs.join(", ")}
-                      {prev && ` / 이전 독촉 ${prev.count}회`}
+                      {kind === "접수 확인" ? "받은 서류" : kind === "보완 요청" ? "보완 요청 서류" : "요청 서류"}: {d.docs.join(", ")}
+                      {kind === "독촉" && prev && ` / 이전 독촉 ${prev.count}회`}
                     </div>
                   </div>
                   <div className="lang" role="group" aria-label="언어">

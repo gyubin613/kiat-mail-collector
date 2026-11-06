@@ -2,6 +2,7 @@ import ExcelJS from "exceljs";
 import JSZip from "jszip";
 import { kstDateTime, planFiles, projectStatus, senderOrg, STATUS_LABEL, type PlannedFile } from "./organize";
 import { logSummary, type ReminderLogEntry } from "./reminder";
+import type { KpassItem, VersionInfo } from "./ledger";
 import { ymd } from "./text";
 import type { MailResult, ParsedMail, Project, Settings } from "./types";
 
@@ -30,6 +31,8 @@ export interface ExportInput {
   projects: Project[];
   settings: Settings;
   reminderLog?: ReminderLogEntry[];
+  kpass?: KpassItem[];
+  versions?: Map<string, VersionInfo>;
 }
 
 export async function buildWorkbook(input: ExportInput, plan: PlannedFile[]): Promise<Uint8Array> {
@@ -182,6 +185,9 @@ export async function buildWorkbook(input: ExportInput, plan: PlannedFile[]): Pr
     { header: "과제번호", key: "pid", width: 14 },
     { header: "과제명", key: "pname", width: 34 },
     { header: "서류 종류", key: "doc", width: 12 },
+    { header: "제출 차수", key: "ver", width: 12 },
+    { header: "점검", key: "check", width: 22 },
+    { header: "K-PASS", key: "kpass", width: 11 },
     { header: "원래 파일명", key: "orig", width: 40 },
     { header: "정리된 파일명", key: "std", width: 44 },
     { header: "저장 위치", key: "path", width: 60 },
@@ -192,26 +198,64 @@ export async function buildWorkbook(input: ExportInput, plan: PlannedFile[]): Pr
     if (f.attachmentIndex < 0) continue;
     const r = resultById.get(f.mailId);
     const p = f.projectId ? byProject.get(f.projectId) : undefined;
+    const ar = r?.attachments[f.attachmentIndex];
+    const v = input.versions?.get(`${f.mailId}#${f.attachmentIndex}`);
     ws3.addRow({
       mail: f.mailId,
       date: date10(f.receivedAt),
       pid: p?.id ?? "",
       pname: p?.name ?? "",
       doc: f.docType,
+      ver: v ? (v.duplicateOf ? "중복(같은 파일)" : `${v.version}차${v.latest ? "" : " (예전)"}`) : "",
+      check: ar?.check ? `${ar.check.state}${ar.check.note ? `: ${ar.check.note}` : ""}` : "",
+      kpass: ar?.kpass && ar.kpass !== "해당 없음" ? ar.kpass : "",
       orig: f.originalName,
       std: f.standardName,
-      path: f.path,
+      path: f.available ? f.path : `${f.path} (이번에 올린 파일이 아니어서 폴더에 없음)`,
       size: Math.max(1, Math.round(f.size / 1024)),
       reason: r?.attachments[f.attachmentIndex]?.docReason ?? "",
     });
   }
   styleHeader(ws3);
 
-  // 독촉 이력
+  // K-PASS 등록 목록
+  if (input.kpass?.length) {
+    const wsK = wb.addWorksheet("K-PASS등록");
+    wsK.columns = [
+      { header: "과제번호", key: "pid", width: 13 },
+      { header: "과제명", key: "pname", width: 34 },
+      { header: "보낸 기관", key: "org", width: 28 },
+      { header: "서류", key: "doc", width: 12 },
+      { header: "파일명", key: "file", width: 40 },
+      { header: "받은 날", key: "date", width: 12 },
+      { header: "최근 제출본", key: "latest", width: 10 },
+      { header: "상태", key: "state", width: 11 },
+      { header: "등록 처리", key: "done", width: 20 },
+    ];
+    for (const k of input.kpass) {
+      const p = byProject.get(k.projectId);
+      const row = wsK.addRow({
+        pid: k.projectId,
+        pname: p?.name ?? "",
+        org: p?.institutions.find((i) => i.key === k.institutionKey)?.name ?? "",
+        doc: k.docType,
+        file: k.filename,
+        date: date10(k.receivedAt),
+        latest: k.latest ? "예" : "예전 차수",
+        state: k.state,
+        done: k.doneAt ? `${date10(k.doneAt)} ${k.doneBy ?? ""}` : "",
+      });
+      row.getCell("state").fill = k.state === "등록 완료" ? OK_FILL : WARN_FILL;
+    }
+    styleHeader(wsK);
+  }
+
+  // 소통 이력
   if (input.reminderLog?.length) {
-    const wsL = wb.addWorksheet("독촉이력");
+    const wsL = wb.addWorksheet("소통이력");
     wsL.columns = [
       { header: "일시", key: "at", width: 17 },
+      { header: "종류", key: "kind", width: 11 },
       { header: "과제번호", key: "pid", width: 13 },
       { header: "기관명", key: "org", width: 30 },
       { header: "받는 사람", key: "to", width: 32 },
@@ -223,6 +267,7 @@ export async function buildWorkbook(input: ExportInput, plan: PlannedFile[]): Pr
     for (const e of input.reminderLog) {
       wsL.addRow({
         at: kstDateTime(e.at),
+        kind: e.kind ?? "독촉",
         pid: e.projectId,
         org: e.institution,
         to: e.to,
@@ -244,7 +289,8 @@ export function exportBaseName(now = new Date()): string {
 }
 
 /** 정리된 폴더 구조 + 엑셀을 하나의 ZIP으로 */
-export async function buildZip(input: ExportInput): Promise<{ zip: Uint8Array; plan: PlannedFile[]; excel: Uint8Array }> {
+/** only: 이 첨부(`${mailId}#${index}`)만 담는다 (K-PASS 등록용 모아 받기) */
+export async function buildZip(input: ExportInput, only?: Set<string>): Promise<{ zip: Uint8Array; plan: PlannedFile[]; excel: Uint8Array }> {
   const plan = planFiles(input.mails, input.results, input.projects);
   const excel = await buildWorkbook(input, plan);
   const base = exportBaseName();
@@ -253,6 +299,8 @@ export async function buildZip(input: ExportInput): Promise<{ zip: Uint8Array; p
   root.file(`${base}.xlsx`, excel);
   const mailById = new Map(input.mails.map((m) => [m.id, m]));
   for (const f of plan) {
+    if (!f.available) continue;
+    if (only && !only.has(`${f.mailId}#${f.attachmentIndex}`)) continue;
     const m = mailById.get(f.mailId)!;
     const bytes = f.attachmentIndex < 0 ? m.raw : m.attachments[f.attachmentIndex].content;
     root.file(f.path, bytes, { date: m.date ? new Date(m.date) : undefined });

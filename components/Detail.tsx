@@ -1,12 +1,79 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
+import { suggestionLabel } from "@/lib/check";
+import type { VersionInfo } from "@/lib/ledger";
 import { stripQuoted } from "@/lib/matcher";
 import { kstDateTime } from "@/lib/text";
-import type { MailResult, ParsedMail, Project } from "@/lib/types";
+import type { AttachmentResult, CheckState, KpassState, MailResult, ParsedMail, Project } from "@/lib/types";
 import { StatusMark } from "./Ledger";
 
 function kb(n: number) {
   return n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))}KB` : `${(n / 1024 / 1024).toFixed(1)}MB`;
+}
+
+function CheckBox({
+  a,
+  canRecheck,
+  onCheck,
+  onRecheck,
+}: {
+  a: AttachmentResult;
+  canRecheck: boolean;
+  onCheck: (state: CheckState, note: string) => void;
+  onRecheck: () => void;
+}) {
+  const c = a.check;
+  const [note, setNote] = useState(c?.note ?? "");
+  useEffect(() => setNote(c?.note ?? ""), [c?.note]);
+  if (a.docType === "기타") return null;
+  const autoFixNote =
+    c?.auto?.items
+      .filter((i) => i.ok === false)
+      .map((i) => `${i.label} 없음`)
+      .join(", ") ?? "";
+  return (
+    <div className="check-box">
+      {c?.auto ? (
+        <div className={`auto ${c.auto.suggestion}`}>
+          자동 점검: <b>{suggestionLabel(c.auto.suggestion)}</b>
+          <ul>
+            {c.auto.items.map((i) => (
+              <li key={i.label} className={i.ok === true ? "ok" : i.ok === false ? "no" : "na"}>
+                {i.ok === true ? "있음" : i.ok === false ? "없음" : "확인"} {i.label}: {i.detail}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <div className="auto manual">자동 점검 결과 없음</div>
+      )}
+      <div className="check-actions">
+        <span>
+          판정: <b className={`cs ${c?.state === "보완 필요" ? "no" : c?.state === "이상 없음" ? "ok" : ""}`}>{c?.state ?? "미점검"}</b>
+          {c?.by && <small> ({c.by})</small>}
+        </span>
+        <button className="btn small" onClick={() => onCheck("이상 없음", "")} disabled={c?.state === "이상 없음"}>
+          이상 없음
+        </button>
+        <button className="btn small" onClick={() => onCheck("보완 필요", note || autoFixNote)}>
+          보완 필요
+        </button>
+        {canRecheck && (
+          <button className="btn small" onClick={onRecheck}>
+            다시 점검
+          </button>
+        )}
+      </div>
+      {(c?.state === "보완 필요" || c?.auto?.suggestion === "fix") && (
+        <div className="fix-note">
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder={autoFixNote || "보완할 내용 (보완 요청 메일에 들어감)"} aria-label="보완할 내용" maxLength={300} />
+          <button className="btn small" disabled={c?.state === "보완 필요" && note === (c?.note ?? "")} onClick={() => onCheck("보완 필요", note || autoFixNote)}>
+            사유 저장
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function Detail({
@@ -15,6 +82,7 @@ export function Detail({
   projects,
   projectsById,
   docTypes,
+  versions,
   aiEnabled,
   aiBusy,
   onClose,
@@ -22,6 +90,9 @@ export function Detail({
   onInstitution,
   onConfirm,
   onDocType,
+  onCheck,
+  onRecheck,
+  onKpass,
   onExclude,
   onInclude,
   onAskAi,
@@ -31,6 +102,7 @@ export function Detail({
   projects: Project[];
   projectsById: Map<string, Project>;
   docTypes: string[];
+  versions: Map<string, VersionInfo>;
   aiEnabled: boolean;
   aiBusy: boolean;
   onClose: () => void;
@@ -38,6 +110,9 @@ export function Detail({
   onInstitution: (key: string | null) => void;
   onConfirm: () => void;
   onDocType: (index: number, type: string) => void;
+  onCheck: (index: number, state: CheckState, note: string) => void;
+  onRecheck: (index: number) => void;
+  onKpass: (index: number, state: KpassState) => void;
   onExclude: () => void;
   onInclude: () => void;
   onAskAi: () => void;
@@ -47,9 +122,9 @@ export function Detail({
 
   const urls = useMemo(
     () =>
-      mail.attachments.map((a) =>
-        URL.createObjectURL(new Blob([a.content as BlobPart], { type: a.mimeType || "application/octet-stream" })),
-      ),
+      mail.stub
+        ? []
+        : mail.attachments.map((a) => URL.createObjectURL(new Blob([a.content as BlobPart], { type: a.mimeType || "application/octet-stream" }))),
     [mail],
   );
   useEffect(() => () => urls.forEach((u) => URL.revokeObjectURL(u)), [urls]);
@@ -61,7 +136,8 @@ export function Detail({
     const exact = projects.find((p) => p.id === v || `${p.id} ${p.name}` === v);
     return exact?.id ?? null;
   })();
-  const body = stripQuoted(mail.text) || "(본문 없음)";
+  const body = mail.stub ? "" : stripQuoted(mail.text) || "(본문 없음)";
+  const settled = result.status === "auto" || result.status === "confirmed";
 
   return (
     <aside className="detail" aria-label="메일 상세">
@@ -87,6 +163,11 @@ export function Detail({
           <dt>원본 파일</dt>
           <dd>{mail.sourceName}</dd>
         </dl>
+        {mail.stub && (
+          <p className="stub-note">
+            이전 작업에서 기록만 남은 메일입니다. 원문과 첨부파일은 정리 폴더의 _메일원문에 있습니다. 같은 메일 파일을 다시 올리면 원문이 연결됩니다.
+          </p>
+        )}
       </div>
 
       {result.status !== "excluded" ? (
@@ -96,7 +177,7 @@ export function Detail({
             <div style={{ fontSize: 13.5 }}>
               <b className="num">{current.id}</b> {current.name}
               <div className="sub" style={{ color: "var(--ink-faint)", fontSize: 12.5 }}>
-                {current.leadOrg} / {current.partnerOrg}
+                담당 {current.manager || "지정 없음"}
               </div>
             </div>
           ) : (
@@ -105,11 +186,7 @@ export function Detail({
           {current && current.institutions.length > 0 && (
             <label className="inst-pick">
               보낸 기관
-              <select
-                className="inline-select"
-                value={result.institutionKey ?? ""}
-                onChange={(e) => onInstitution(e.target.value || null)}
-              >
+              <select className="inline-select" value={result.institutionKey ?? ""} onChange={(e) => onInstitution(e.target.value || null)}>
                 <option value="">알 수 없음 (선택해 주세요)</option>
                 {current.institutions.map((i) => (
                   <option key={i.key} value={i.key}>
@@ -134,12 +211,7 @@ export function Detail({
                 const p = projectsById.get(c.projectId);
                 if (!p) return null;
                 return (
-                  <button
-                    key={c.projectId}
-                    className={`cand${c.projectId === result.projectId ? " current" : ""}`}
-                    onClick={() => onAssign(c.projectId)}
-                    title="이 과제로 확정"
-                  >
+                  <button key={c.projectId} className={`cand${c.projectId === result.projectId ? " current" : ""}`} onClick={() => onAssign(c.projectId)} title="이 과제로 확정">
                     <span>
                       <b className="num">{p.id}</b> {p.name}
                       <small>{c.reasons.join(", ")}</small>
@@ -154,13 +226,7 @@ export function Detail({
           )}
 
           <div className="picker">
-            <input
-              list="project-options"
-              placeholder="과제번호나 과제명으로 찾기"
-              value={pick}
-              onChange={(e) => setPick(e.target.value)}
-              aria-label="다른 과제 지정"
-            />
+            <input list="project-options" placeholder="과제번호나 과제명으로 찾기" value={pick} onChange={(e) => setPick(e.target.value)} aria-label="다른 과제 지정" />
             <button className="btn small" disabled={!pickedId} onClick={() => pickedId && onAssign(pickedId)}>
               지정
             </button>
@@ -182,7 +248,7 @@ export function Detail({
                 과제 지정 취소
               </button>
             )}
-            {aiEnabled && (
+            {aiEnabled && !mail.stub && (
               <button className="btn small" onClick={onAskAi} disabled={aiBusy}>
                 {aiBusy ? "AI가 읽는 중…" : "AI에게 판단 맡기기"}
               </button>
@@ -205,35 +271,60 @@ export function Detail({
       {mail.attachments.length > 0 && (
         <div className="detail-sec">
           <h3>첨부파일 {mail.attachments.length}개</h3>
-          {mail.attachments.map((a, i) => (
-            <div className="att-row" key={i}>
-              <div>
-                <a href={urls[i]} download={a.filename}>
-                  {a.filename}
-                </a>
-                <small>
-                  {kb(a.size)}, {result.attachments[i]?.docReason}
-                </small>
+          {mail.attachments.map((a, i) => {
+            const ar = result.attachments[i];
+            const v = versions.get(`${mail.id}#${i}`);
+            return (
+              <div className="att-block" key={i}>
+                <div className="att-row">
+                  <div>
+                    {mail.stub ? <span>{a.filename}</span> : <a href={urls[i]} download={a.filename}>{a.filename}</a>}
+                    <small>
+                      {kb(a.size)}, {ar?.docReason}
+                      {v && v.duplicateOf && <b className="badge dup">앞서 받은 파일과 같음</b>}
+                      {v && !v.duplicateOf && v.total > 1 && <b className={`badge ${v.latest ? "" : "old"}`}>{v.version}차 제출{v.latest ? " (최근)" : ""}</b>}
+                    </small>
+                  </div>
+                  <select value={ar?.docType ?? "기타"} onChange={(e) => onDocType(i, e.target.value)} aria-label={`${a.filename} 서류 종류`}>
+                    {[...docTypes, "기타"].map((d) => (
+                      <option key={d}>{d}</option>
+                    ))}
+                  </select>
+                </div>
+                {ar && settled && (
+                  <>
+                    <CheckBox a={ar} canRecheck={!mail.stub && /\.pdf$/i.test(a.filename)} onCheck={(s, n) => onCheck(i, s, n)} onRecheck={() => onRecheck(i)} />
+                    {ar.docType !== "기타" && (
+                      <label className="kpass-pick">
+                        K-PASS
+                        <select className="inline-select" value={ar.kpass ?? "해당 없음"} onChange={(e) => onKpass(i, e.target.value as KpassState)} aria-label={`${a.filename} K-PASS 등록`}>
+                          <option>해당 없음</option>
+                          <option>등록 대기</option>
+                          <option>등록 완료</option>
+                        </select>
+                      </label>
+                    )}
+                  </>
+                )}
               </div>
-              <select
-                value={result.attachments[i]?.docType ?? "기타"}
-                onChange={(e) => onDocType(i, e.target.value)}
-                aria-label={`${a.filename} 서류 종류`}
-              >
-                {[...docTypes, "기타"].map((d) => (
-                  <option key={d}>{d}</option>
-                ))}
-              </select>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
-      <div className="detail-sec">
-        <h3>본문</h3>
-        {result.aiAssisted && result.summary && <p className="ai-summary">AI 요약: {result.summary}</p>}
-        <pre className="body-text">{body}</pre>
-      </div>
+      {!mail.stub && (
+        <div className="detail-sec">
+          <h3>본문</h3>
+          {result.aiAssisted && result.summary && <p className="ai-summary">AI 요약: {result.summary}</p>}
+          <pre className="body-text">{body}</pre>
+        </div>
+      )}
+      {mail.stub && result.summary && (
+        <div className="detail-sec">
+          <h3>본문 요약</h3>
+          <p style={{ fontSize: 13, margin: 0 }}>{result.summary}</p>
+        </div>
+      )}
     </aside>
   );
 }

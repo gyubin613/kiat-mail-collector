@@ -10,8 +10,9 @@ import { matchAll } from "../lib/matcher";
 import { projectStatus, type InstitutionStatusRow } from "../lib/organize";
 import { rowsToProjects } from "../lib/projects";
 import { readSheet } from "../lib/readSheet";
-import { buildDraft, deadlineEn, deadlineKo, logSummary, parseRecipients, type ReminderOptions } from "../lib/reminder";
+import { buildDraft, buildFixDraft, buildReceiptDraft, deadlineEn, deadlineKo, eligible, fixNoteEn, logSummary, parseRecipients, type ReminderOptions } from "../lib/reminder";
 import { DEFAULT_SETTINGS } from "../lib/settings";
+import { memberCookie } from "./helpers";
 
 const S = join(__dirname, "..", "public", "samples");
 let rows: InstitutionStatusRow[];
@@ -58,6 +59,30 @@ describe("독촉 메일 초안", () => {
     expect(buildDraft(row("P0031025", "참여기관"), opts, "en", 2).subject.startsWith("Reminder: ")).toBe(true);
   });
 
+  it("보완 요청: 사유를 넣고, 영문은 알려진 사유만 번역", () => {
+    const r = { ...row("P0031010", "참여기관"), fixDocs: [{ doc: "참여확약서", note: "서명 없음, 날짜 없음" }] };
+    expect(eligible("보완 요청", r)).toBe(true);
+    const en = buildFixDraft(r, opts);
+    expect(en.body).toContain("- Letter of Commitment: the signature is missing, the date is missing");
+    expect(en.subject).toContain("Revision needed for project P0031010");
+    const ko = buildFixDraft(r, opts, "ko");
+    expect(ko.body).toContain("■ 참여확약서: 서명 없음, 날짜 없음");
+    expect(fixNoteEn("도장 위치가 다릅니다")).toBe("please check and resend");
+  });
+
+  it("접수 확인: 받은 서류와 남은 서류", () => {
+    const r = row("P0031009", "주관기관");
+    const p = row("P0031009", "참여기관");
+    expect(eligible("접수 확인", r)).toBe(false);
+    expect(eligible("접수 확인", p)).toBe(true);
+    const d = buildReceiptDraft(p, opts);
+    expect(d.docs).toEqual(["참여확약서", "협약서"]);
+    expect(d.body).toContain("We have now received all the requested documents.");
+    const lead = row("P0031008", "주관기관");
+    const k = buildReceiptDraft(lead, opts, "ko");
+    expect(k.body).toContain("■ 받은 서류: 재무증빙");
+  });
+
   it("받는 사람 주소 확인", () => {
     expect(parseRecipients("a@x.com, b@y.org; bad, A@X.com")).toEqual({ ok: ["a@x.com", "b@y.org"], bad: ["bad"] });
   });
@@ -77,7 +102,7 @@ describe("독촉 메일 초안", () => {
 describe("메일 발송", () => {
   const received: { to: string[]; data: string }[] = [];
   let server: SMTPServer;
-  const call = (body: unknown, headers: Record<string, string> = {}) =>
+  const call = (body: unknown, headers: Record<string, string> = memberCookie()) =>
     send(new Request("http://x/api/mail/send", { method: "POST", headers, body: JSON.stringify(body) }));
 
   beforeAll(async () => {
@@ -108,7 +133,7 @@ describe("메일 발송", () => {
   });
   afterAll(() => {
     server.close();
-    for (const k of ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "EMAIL_FROM_NAME", "EMAIL_REPLY_TO", "EMAIL_ALLOWED_RECIPIENTS", "APP_PASSWORD"]) delete process.env[k];
+    for (const k of ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASS", "EMAIL_FROM_NAME", "EMAIL_REPLY_TO", "EMAIL_ALLOWED_RECIPIENTS"].concat([])) delete process.env[k];
   });
 
   it("허용 목록 규칙", () => {
@@ -144,11 +169,8 @@ describe("메일 발송", () => {
     expect(received[0].data).toContain("=?UTF-8?");
   });
 
-  it("비밀번호를 설정하면 없는 요청은 막는다", async () => {
-    process.env.APP_PASSWORD = "pw";
-    expect((await call({ messages: [{ id: "a", to: ["me@test.example"], subject: "s", body: "b" }] })).status).toBe(401);
-    expect((await call({ messages: [{ id: "a", to: ["me@test.example"], subject: "s", body: "b" }] }, { "x-app-password": "pw" })).status).toBe(200);
-    delete process.env.APP_PASSWORD;
+  it("로그인하지 않은 요청은 막는다", async () => {
+    expect((await call({ messages: [{ id: "a", to: ["me@test.example"], subject: "s", body: "b" }] }, {})).status).toBe(401);
   });
 
   it("SMTP 설정이 없으면 503", async () => {

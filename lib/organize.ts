@@ -1,5 +1,5 @@
 import { emailDomain, extOf, kstDateTime, safeFileName, ymd } from "./text";
-import type { DocScope, Institution, MailResult, ParsedMail, Project, Settings } from "./types";
+import type { CheckState, DocScope, Institution, MailResult, ParsedMail, Project, Settings } from "./types";
 
 export const UNMATCHED_FOLDER = "00_미분류";
 export const REVIEW_FOLDER = "01_확인필요";
@@ -17,6 +17,8 @@ export interface PlannedFile {
   path: string;
   size: number;
   receivedAt: string;
+  /** 이번 작업에 파일 내용이 있는지 (이전 작업 기록만 있으면 false) */
+  available: boolean;
 }
 
 /** 파일명에 넣을 짧은 기관명: "(주)한빛로보틱스" → "한빛로보틱스", "Nordlicht Institute of Technology" → "Nordlicht Institute" */
@@ -99,10 +101,11 @@ export function planFiles(
         path,
         size: a.size,
         receivedAt: mail.date,
+        available: !mail.stub,
       });
     });
 
-    const emlName = `${date}_${mail.id}_${safeFileName(mail.subject, 40)}.eml`;
+    const emlName = `${date}_${safeFileName(mail.subject, 50)}.eml`;
     const emlPath = unique(`${folder}/${MAIL_ARCHIVE_FOLDER}/${emlName}`);
     out.push({
       mailId: mail.id,
@@ -114,12 +117,25 @@ export function planFiles(
       path: emlPath,
       size: mail.raw.byteLength,
       receivedAt: mail.date,
+      available: !mail.stub,
     });
   }
   return out;
 }
 
-export type DocState = { receivedAt: string; count: number };
+export type DocState = {
+  receivedAt: string;
+  /** 받은 횟수 (중복 파일 포함) */
+  count: number;
+  /** 가장 최근 제출본: `${mailId}#${index}` */
+  latestRef?: string;
+  /** 최근 제출본 점검 상태 */
+  checkState?: CheckState;
+  /** 자동 점검 추정 (담당자 판정 전) */
+  autoSuggestion?: "ok" | "fix" | "manual";
+  /** 보완 필요일 때 메모 */
+  fixNote?: string;
+};
 
 export interface InstitutionStatusRow {
   project: Project;
@@ -131,6 +147,10 @@ export interface InstitutionStatusRow {
   missing: string[];
   /** 독촉 대상 서류 (주관기관은 과제 공통 미제출 서류도 포함) */
   remindDocs: string[];
+  /** 보완 요청 대상 (최근 제출본이 '보완 필요') */
+  fixDocs: { doc: string; note: string }[];
+  /** 받은 서류 (접수 확인 메일용) */
+  receivedDocs: string[];
   lastReceived: string;
 }
 
@@ -159,8 +179,17 @@ export function commonDocs(settings: Settings): string[] {
   return settings.requiredDocs.filter((d) => settings.docScope[d] === "과제 공통");
 }
 
-function bump(cur: DocState | null | undefined, date: string): DocState {
-  return { receivedAt: !cur || date > cur.receivedAt ? date : cur.receivedAt, count: (cur?.count ?? 0) + 1 };
+function bump(cur: DocState | null | undefined, date: string, ref: string, a: MailResult["attachments"][number]): DocState {
+  const newer = !cur || date >= cur.receivedAt;
+  if (!newer) return { ...cur!, count: cur!.count + 1 };
+  return {
+    receivedAt: date,
+    count: (cur?.count ?? 0) + 1,
+    latestRef: ref,
+    checkState: a.check?.state ?? "미점검",
+    autoSuggestion: a.check?.auto?.suggestion,
+    fixNote: a.check?.state === "보완 필요" ? a.check.note : undefined,
+  };
 }
 
 /** 과제·기관별 서류 제출 현황 */
@@ -183,37 +212,47 @@ export function projectStatus(
         docs: Object.fromEntries(required.map((d) => [d, null])),
         missing: [],
         remindDocs: [],
+        fixDocs: [],
+        receivedDocs: [],
         lastReceived: "",
       };
     });
     const rowByKey = new Map(rows.map((r) => [r.institution.key, r]));
     let unassigned = 0;
     let lastReceived = "";
-    for (const r of results) {
-      if (r.projectId !== p.id || (r.status !== "auto" && r.status !== "confirmed")) continue;
-      const m = mailById.get(r.mailId);
-      if (!m) continue;
+    const mine = results
+      .filter((r) => r.projectId === p.id && (r.status === "auto" || r.status === "confirmed"))
+      .map((r) => ({ r, m: mailById.get(r.mailId) }))
+      .filter((x): x is { r: MailResult; m: ParsedMail } => !!x.m)
+      .sort((a, b) => a.m.date.localeCompare(b.m.date));
+    for (const { r, m } of mine) {
       if (m.date > lastReceived) lastReceived = m.date;
       const row = r.institutionKey ? rowByKey.get(r.institutionKey) : undefined;
       if (row && m.date > row.lastReceived) row.lastReceived = m.date;
       for (const a of r.attachments) {
+        const ref = `${r.mailId}#${a.index}`;
+        if (row && a.docType !== "기타" && !row.receivedDocs.includes(a.docType)) row.receivedDocs.push(a.docType);
         if (a.docType in common) {
-          common[a.docType] = bump(common[a.docType], m.date);
+          common[a.docType] = bump(common[a.docType], m.date, ref, a);
         } else if (row && a.docType in row.docs) {
-          row.docs[a.docType] = bump(row.docs[a.docType], m.date);
+          row.docs[a.docType] = bump(row.docs[a.docType], m.date, ref, a);
         } else if (!row && settings.requiredDocs.includes(a.docType)) {
           unassigned += 1;
         }
       }
     }
     const commonMissing = commons.filter((d) => !common[d]);
-    for (const row of rows) {
+    const commonFix = commons
+      .filter((d) => common[d]?.checkState === "보완 필요")
+      .map((d) => ({ doc: d, note: common[d]!.fixNote ?? "" }));
+    const leadIdx = Math.max(0, rows.findIndex((r) => r.institution.role === "주관기관"));
+    rows.forEach((row, i) => {
       row.missing = row.required.filter((d) => !row.docs[d]);
-      row.remindDocs = row.institution.role === "주관기관" ? [...row.missing, ...commonMissing] : [...row.missing];
-    }
-    if (!rows.some((r) => r.institution.role === "주관기관") && rows[0]) {
-      rows[0].remindDocs = [...rows[0].missing, ...commonMissing];
-    }
+      const own = row.required.filter((d) => row.docs[d]?.checkState === "보완 필요").map((d) => ({ doc: d, note: row.docs[d]!.fixNote ?? "" }));
+      const isLead = i === leadIdx;
+      row.remindDocs = isLead ? [...row.missing, ...commonMissing] : [...row.missing];
+      row.fixDocs = isLead ? [...own, ...commonFix] : own;
+    });
     const missingLabels = [
       ...commonMissing.map((d) => `${d}(과제 공통)`),
       ...rows.flatMap((r) => r.missing.map((d) => `${shortOrg(r.institution.name, 14)} ${d}`)),

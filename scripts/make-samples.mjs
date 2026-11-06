@@ -215,11 +215,41 @@ const day = (dd, hh = 10, mm = 0) => `2026-${dd <= 30 ? "11" : "12"}-${String(dd
 const mails = [];
 const add = (name, m) => mails.push({ name, content: eml(m) });
 
-const loc = (p) => ({ name: `Letter_of_Commitment_${p.partnerOrg.split(" ")[0]}_signed.pdf`, data: fakePdf("Letter of Commitment", [p.partnerOrg, `Project: ${p.id}`, "Signed by authorized representative", "Date: 2026-12-01"]) });
-const agr = (p, n = "Consortium_Agreement") => ({ name: `${n}_${p.id}.pdf`, data: fakePdf("Consortium Agreement", [p.leadOrg.replace(/[^\x20-\x7e]/g, "") || "Lead", p.partnerOrg, "Signed copy"]) });
-const fin = (p) => [
-  { name: `2026_재무제표_${p.leadOrg.replace(/[()주]/g, "")}.pdf`, data: fakePdf("Financial Statement 2026", ["Balance sheet (demo)"]) },
-  { name: "감사보고서.pdf", data: fakePdf("Audit Report", ["Independent auditor (demo)"]) },
+// signed=false: 서명·날짜가 빠진 확약서 (서류 점검 시연용)
+const loc = (p, signed = true) => ({
+  name: `Letter_of_Commitment_${p.partnerOrg.split(" ")[0]}${signed ? "_signed" : ""}.pdf`,
+  data: fakePdf(
+    "Letter of Commitment",
+    signed
+      ? [p.partnerOrg, `Project: ${p.id}`, "We hereby commit to participate in the joint project.", "Signed by authorized representative", "Date: 2026-12-01"]
+      : [p.partnerOrg, `Project: ${p.id}`, "We hereby commit to participate in the joint project.", "Name of representative: ________"],
+  ),
+});
+// 글자가 없는 스캔본처럼 보이는 PDF
+function scanPdf() {
+  const ops = "0.9 g 40 40 515 762 re f";
+  const objs = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R >>",
+    `<< /Length ${ops.length} >>\nstream\n${ops}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [];
+  objs.forEach((o, i) => {
+    offsets.push(pdf.length);
+    pdf += `${i + 1} 0 obj\n${o}\nendobj\n`;
+  });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) pdf += `${String(off).padStart(10, "0")} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf, "latin1");
+}
+const agr = (p, n = "Consortium_Agreement") => ({ name: `${n}_${p.id}.pdf`, data: fakePdf("Consortium Agreement", [`Project: ${p.id}`, p.partnerOrg, "Signed copy by both parties", "Date: 2026-12-02"]) });
+const fin = (p, scanned = false) => [
+  { name: `2026_재무제표_${p.leadOrg.replace(/[()주]/g, "")}.pdf`, data: fakePdf("Financial Statement 2026", [`Project ${p.id}`, "Balance sheet (demo)", "Date: 2026-11-30"]) },
+  { name: "감사보고서.pdf", data: scanned ? scanPdf() : fakePdf("Audit Report", [`Project ${p.id}`, "Independent auditor (demo)", "Signed by auditor", "Date: 2026-11-28"]) },
 ];
 
 // 0~7: 세 가지 서류를 모두 제출 (완료)
@@ -229,7 +259,7 @@ for (let i = 0; i < 8; i++) {
     fromName: p.partnerName, from: p.partnerEmail,
     subject: `[${p.id}] Signed Letter of Commitment`,
     body: `Dear KIAT team,\n\nPlease find attached our signed Letter of Commitment for the joint project ${p.id}.\n\nBest regards,\n${p.partnerName}\n${p.partnerOrg}`,
-    date: day(30 + (i % 5), 17, 10 + i), attachments: [loc(p)],
+    date: day(30 + (i % 5), 17, 10 + i), attachments: [loc(p, i !== 3)],
   });
   add(`${p.id}_agreement.eml`, {
     fromName: p.partnerName, from: p.partnerEmail,
@@ -241,8 +271,31 @@ for (let i = 0; i < 8; i++) {
     fromName: p.leadName, from: p.leadEmail,
     subject: `${p.name} 재무증빙 서류 제출`,
     body: `안녕하세요, ${p.leadOrg} ${p.leadName}입니다.\n\n${p.name} 과제 관련 재무증빙 서류(재무제표, 감사보고서)를 송부드립니다.\nK-PASS 마감으로 메일로 제출합니다.\n\n감사합니다.`,
-    date: day(31 + (i % 7), 9, 30 + i), attachments: fin(p),
+    date: day(31 + (i % 7), 9, 30 + i), attachments: fin(p, i === 5),
   });
+}
+
+// 3번 과제: 서명이 빠진 확약서를 받은 뒤 서명본을 다시 보냄 (재제출 2차)
+{
+  const p = projects[3];
+  add(`${p.id}_loc_resubmit.eml`, {
+    fromName: p.partnerName, from: p.partnerEmail,
+    subject: `RE: [${p.id}] Letter of Commitment - signed version`,
+    body: `Dear KIAT team,\n\nSorry, the previous file was not signed. Please find the signed version attached.\n\nBest regards,\n${p.partnerName}`,
+    date: day(39, 10, 5), attachments: [loc(p, true)],
+  });
+}
+// 4번 과제: 같은 확약서 파일을 한 번 더 보냄 (중복)
+{
+  const p = projects[4];
+  const first = mails.find((m) => m.name === `${p.id}_loc.eml`);
+  add(`${p.id}_loc_dup.eml`, {
+    fromName: p.partnerName, from: p.partnerEmail,
+    subject: `Fwd: [${p.id}] Signed Letter of Commitment`,
+    body: `Forwarding again in case it was missed.\n\n${p.partnerName}`,
+    date: day(38, 9, 0), attachments: [loc(p, true)],
+  });
+  if (!first) throw new Error("sample order");
 }
 
 // 8~13: 확약서 + 협약서를 한 메일에 (재무증빙 미제출 → 일부 제출)
@@ -252,7 +305,7 @@ for (let i = 8; i < 14; i++) {
     fromName: p.partnerName, from: p.partnerEmail,
     subject: `Documents for KIAT joint project (${p.id})`,
     body: `Dear Sir or Madam,\n\nPlease find attached the Letter of Commitment and the signed Agreement.\n\nBest,\n${p.partnerName}`,
-    date: day(32 + (i % 6), 18, i), attachments: [loc(p), agr(p, "Research_Agreement")],
+    date: day(32 + (i % 6), 18, i), attachments: [loc(p, i !== 9 && i !== 12), agr(p, "Research_Agreement")],
   });
 }
 
@@ -307,7 +360,7 @@ add("unknown_scan.eml", {
   subject: "Scanned document",
   body: "Please find the attached documents.",
   date: day(35, 11, 11),
-  attachments: [{ name: "scan_0012.pdf", data: fakePdf("Scan", ["(unreadable scan)"]) }],
+  attachments: [{ name: "scan_0012.pdf", data: scanPdf() }],
 });
 
 // 업무와 무관한 메일 → 대상 아님

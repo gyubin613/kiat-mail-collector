@@ -2,6 +2,12 @@ import PostalMime from "postal-mime";
 import JSZip from "jszip";
 import type { MailAttachment, ParsedMail } from "./types";
 
+export async function sha256Hex(data: Uint8Array | string): Promise<string> {
+  const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+  const buf = await globalThis.crypto.subtle.digest("SHA-256", bytes as BufferSource);
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function toBytes(content: ArrayBuffer | Uint8Array | string): Uint8Array {
   if (typeof content === "string") return new TextEncoder().encode(content);
   return content instanceof Uint8Array ? content : new Uint8Array(content);
@@ -39,6 +45,7 @@ export async function parseEml(bytes: Uint8Array, sourceName: string, id: string
       mimeType: a.mimeType || "application/octet-stream",
       size: content.byteLength,
       content,
+      sha256: await sha256Hex(content),
     });
   }
   const text = email.text?.trim() ? email.text : email.html ? htmlToText(email.html) : "";
@@ -47,8 +54,11 @@ export async function parseEml(bytes: Uint8Array, sourceName: string, id: string
     const d = new Date(email.date);
     if (!Number.isNaN(d.getTime())) date = d.toISOString();
   }
+  const messageId = (email.messageId || "").trim().replace(/^<|>$/g, "").toLowerCase();
+  const key = messageId ? `m${(await sha256Hex(messageId)).slice(0, 16)}` : `r${(await sha256Hex(bytes)).slice(0, 16)}`;
   return {
-    id,
+    id: id || key,
+    messageId,
     sourceName,
     fromName: email.from?.name || "",
     fromAddress: (email.from?.address || "").toLowerCase(),
@@ -91,20 +101,28 @@ export async function expandMailFiles(files: LoadedFile[]): Promise<{ emls: Load
   return { emls, skipped };
 }
 
-export async function parseAll(files: LoadedFile[]): Promise<{ mails: ParsedMail[]; errors: string[]; skipped: string[] }> {
+/** .eml·.zip을 읽는다. 같은 메일(같은 키)은 한 번만 남기고 duplicates로 센다 */
+export async function parseAll(
+  files: LoadedFile[],
+): Promise<{ mails: ParsedMail[]; errors: string[]; skipped: string[]; duplicates: number }> {
   const { emls, skipped } = await expandMailFiles(files);
   const mails: ParsedMail[] = [];
   const errors: string[] = [];
-  let n = 0;
+  const seen = new Set<string>();
+  let duplicates = 0;
   for (const f of emls) {
     try {
-      n += 1;
-      mails.push(await parseEml(f.bytes, f.name, `M${String(n).padStart(3, "0")}`));
+      const m = await parseEml(f.bytes, f.name, "");
+      if (seen.has(m.id)) {
+        duplicates += 1;
+        continue;
+      }
+      seen.add(m.id);
+      mails.push(m);
     } catch (e) {
       errors.push(`${f.name}: 메일을 읽지 못했습니다 (${(e as Error).message})`);
     }
   }
   mails.sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-  mails.forEach((m, i) => (m.id = `M${String(i + 1).padStart(3, "0")}`));
-  return { mails, errors, skipped };
+  return { mails, errors, skipped, duplicates };
 }

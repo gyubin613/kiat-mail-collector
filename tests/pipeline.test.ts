@@ -100,7 +100,7 @@ describe("과제관리 현황 불러오기", () => {
 
 describe("메일 읽기", () => {
   it("zip 안의 .eml을 모두 읽는다", () => {
-    expect(mails).toHaveLength(43);
+    expect(mails).toHaveLength(45);
     const { mail } = bySource("P0031001_finance.eml");
     expect(mail.subject).toContain("재무증빙");
     expect(mail.attachments.map((a) => a.filename)).toContain("감사보고서.pdf");
@@ -243,6 +243,6 @@ describe("정리 결과", () => {
     expect(wb.worksheets.map((w) => w.name)).toEqual(["기관별제출현황", "과제별요약", "메일목록", "첨부파일목록"]);
     expect(wb.getWorksheet("기관별제출현황")!.rowCount).toBe(1 + 60 + 6);
     expect(wb.getWorksheet("과제별요약")!.rowCount).toBe(31);
-    expect(wb.getWorksheet("메일목록")!.rowCount).toBe(44);
+    expect(wb.getWorksheet("메일목록")!.rowCount).toBe(46);
   });
 });
