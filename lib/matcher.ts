@@ -3,6 +3,7 @@ import { compact, emailDomain, nameTokens, normalize, orgTokens } from "./text";
 import type {
   AttachmentResult,
   Candidate,
+  Institution,
   MailResult,
   MatchStatus,
   ParsedMail,
@@ -168,7 +169,8 @@ export function scoreProject(
   const hay = `${mail.subject}\n${mail.fromName}\n${fileNames}\n${body}`;
   const nHay = normalize(hay);
   const cHay = nHay.replace(/\s+/g, "");
-  const orgScore = Math.max(orgMatch(p.partnerOrg, nHay, cHay), orgMatch(p.leadOrg, nHay, cHay));
+  const orgNames = p.institutions?.length ? p.institutions.map((i) => i.name) : [p.partnerOrg, p.leadOrg];
+  const orgScore = Math.max(0, ...orgNames.map((n) => orgMatch(n, nHay, cHay)));
   if (orgScore) {
     score += orgScore;
     reasons.push(orgScore >= 35 ? "기관명 언급" : "기관명 일부 언급");
@@ -187,6 +189,39 @@ export function scoreProject(
   }
 
   return { projectId: p.id, score, reasons, strong };
+}
+
+/** 과제가 정해진 메일이 그 과제의 어느 기관에서 왔는지 */
+export function matchInstitution(mail: ParsedMail, project: Project | undefined): { key: string | null; reason: string } {
+  if (!project || !project.institutions.length) return { key: null, reason: "" };
+  const insts = project.institutions;
+  const from = mail.fromAddress.toLowerCase();
+  const byMail = insts.find((i) => i.emails.includes(from));
+  if (byMail) return { key: byMail.key, reason: "발신자 메일 일치" };
+  const d = emailDomain(from);
+  if (d && !PUBLIC_MAIL_DOMAINS.has(d)) {
+    const byDomain = insts.filter((i) => i.emails.some((e) => emailDomain(e) === d));
+    if (byDomain.length === 1) return { key: byDomain[0].key, reason: `발신 도메인 일치(@${d})` };
+  }
+  const body = stripQuoted(mail.text).slice(0, 4000);
+  const hay = `${mail.subject}\n${mail.fromName}\n${mail.attachments.map((a) => a.filename).join(" ")}\n${body}`;
+  const nHay = normalize(hay);
+  const cHay = nHay.replace(/\s+/g, "");
+  const byName = insts
+    .map((i) => ({ i, s: orgMatch(i.name, nHay, cHay) }))
+    .filter((x) => x.s > 0)
+    .sort((a, b) => b.s - a.s);
+  if (byName.length && (byName.length === 1 || byName[0].s > byName[1].s)) {
+    return { key: byName[0].i.key, reason: "본문·서명에 기관명" };
+  }
+  if (insts.length === 1) return { key: insts[0].key, reason: "과제의 유일한 기관" };
+  return { key: null, reason: "보낸 기관을 알 수 없음" };
+}
+
+export function institutionByKey(projects: Project[], key: string | null): Institution | undefined {
+  if (!key) return undefined;
+  const pid = key.split("::")[0];
+  return projects.find((p) => p.id === pid)?.institutions.find((i) => i.key === key);
 }
 
 export function matchMail(
@@ -248,11 +283,16 @@ export function matchMail(
   else if (confidence >= settings.reviewThreshold) status = "review";
   else status = "unmatched";
 
+  const projectId = status === "auto" || status === "review" ? top!.projectId : null;
+  const inst = matchInstitution(mail, projectId ? projects.find((p) => p.id === projectId) : undefined);
+
   return {
     mailId: mail.id,
     relevant,
     relevanceReason,
-    projectId: status === "auto" || status === "review" ? top!.projectId : null,
+    projectId,
+    institutionKey: inst.key,
+    institutionReason: inst.reason,
     confidence,
     status,
     reasons,

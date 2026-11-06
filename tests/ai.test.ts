@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sanitizeAiResult, type AiClassifyRequest } from "../lib/ai/classify";
 import { POST } from "../app/api/ai/classify/route";
 import { aiConfig } from "../lib/ai/provider";
+import { memberCookie } from "./helpers";
 
 const req: AiClassifyRequest = {
   mail: { subject: "LOC", fromName: "A", fromAddress: "a@x.example", date: "", body: "hi", attachments: ["a.pdf", "b.pdf"] },
@@ -58,7 +59,7 @@ describe("내부 모델 서버(OpenAI 호환)로 전환", () => {
 
   it("환경변수만 바꾸면 같은 API가 내부 모델을 쓴다", async () => {
     expect(aiConfig().provider).toBe("internal");
-    const res = await POST(new Request("http://x/api/ai/classify", { method: "POST", body: JSON.stringify(req) }));
+    const res = await POST(new Request("http://x/api/ai/classify", { method: "POST", headers: memberCookie(), body: JSON.stringify(req) }));
     const data = await res.json();
     expect(res.status).toBe(200);
     expect(data.projectId).toBe("P1");
@@ -67,10 +68,8 @@ describe("내부 모델 서버(OpenAI 호환)로 전환", () => {
     expect(seen.messages?.[1].content).toContain("P1 | 과제1");
   });
 
-  it("비밀번호를 설정하면 없는 요청은 막는다", async () => {
-    process.env.APP_PASSWORD = "pw";
+  it("로그인하지 않은 요청은 막는다", async () => {
     const res = await POST(new Request("http://x/api/ai/classify", { method: "POST", body: JSON.stringify(req) }));
     expect(res.status).toBe(401);
-    delete process.env.APP_PASSWORD;
   });
 });

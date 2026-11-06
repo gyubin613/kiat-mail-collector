@@ -23,21 +23,67 @@ const bySource = (name: string) => {
 };
 
 beforeAll(async () => {
-  const rows = await readSheet(new Uint8Array(readFileSync(join(S, "과제목록_가상.xlsx"))), "과제목록_가상.xlsx");
+  const rows = await readSheet(new Uint8Array(readFileSync(join(S, "과제관리현황_가상.xlsx"))), "과제관리현황_가상.xlsx");
   projects = rowsToProjects(rows).projects;
   const parsed = await parseAll([{ name: "가상메일.zip", bytes: new Uint8Array(readFileSync(join(S, "가상메일.zip"))) }]);
   mails = parsed.mails;
   results = matchAll(mails, projects, DEFAULT_SETTINGS);
 });
 
-describe("과제 목록 불러오기", () => {
-  it("열 이름을 인식하고 연락처를 모은다", () => {
+describe("과제관리 현황 불러오기", () => {
+  it("기관별 행을 과제로 묶고 기관 구분·해외 여부를 읽는다", () => {
     expect(projects).toHaveLength(30);
     const p = projects[0];
     expect(p.id).toBe("P0031001");
-    expect(p.partnerOrg).toBe("Nordlicht Institute of Technology");
-    expect(p.contacts).toHaveLength(2);
-    expect(p.partnerContacts).toEqual(["anna.0@nordlicht.example.de"]);
+    expect(p.nameEn).toContain("collaborative robots");
+    expect(p.institutions.map((i) => [i.name, i.role, i.foreign])).toEqual([
+      ["(주)한빛로보틱스", "주관기관", false],
+      ["Nordlicht Institute of Technology", "참여기관", true],
+    ]);
+    expect(p.institutions[1].emails).toEqual(["anna.0@nordlicht.example.de"]);
+    expect(p.institutions[1].contactName).toBe("Anna Weber");
+    expect(projects[2].institutions).toHaveLength(3);
+  });
+
+  it("전화번호·주소·사업자번호 열은 읽지 않는다", async () => {
+    const rows = await readSheet(new Uint8Array(readFileSync(join(S, "과제관리현황_가상.xlsx"))), "x.xlsx");
+    const r = rowsToProjects(rows);
+    expect(r.format).toBe("기관별");
+    const dropped = r.columns.dropped.map((d) => d.header);
+    expect(dropped).toEqual(expect.arrayContaining(["전화번호", "주소", "사업자등록번호"]));
+    expect(r.columns.dropped.find((d) => d.header === "전화번호")!.reason).toContain("개인정보");
+    const json = JSON.stringify(r.projects);
+    expect(json).not.toMatch(/02-30\d\d-/);
+    expect(json).not.toContain("+49 30");
+    expect(json).not.toContain("가상로");
+  });
+
+  it("셀 안에 섞인 전화번호도 지운다", () => {
+    const r = rowsToProjects([
+      ["과제번호", "과제명", "기관명", "구분", "이메일", "책임연구자"],
+      ["P1", "과제", "가나기관", "주관", "a@b.example.kr / 010-1234-5678", "홍길동 (02-555-1234)"],
+      ["P1", "과제", "다라기관", "참여", "c@d.example.kr", "김철수 (02) 555-1234"],
+    ]);
+    const i = r.projects[0].institutions[0];
+    expect(i.emails).toEqual(["a@b.example.kr"]);
+    expect(i.contactName).toBe("홍길동");
+    expect(r.projects[0].institutions[1].contactName).toBe("김철수");
+    expect(JSON.stringify(r.projects)).not.toMatch(/\d{3,4}-\d{4}/);
+  });
+
+  it("과제별 한 줄(가로형) 표도 읽는다", () => {
+    const r = rowsToProjects([
+      ["과제번호", "과제명", "주관기관", "주관기관 이메일", "참여기관", "참여기관 이메일", "국가"],
+      ["P9", "가로형 과제", "(주)테스트", "lead@test.example.kr", "Alpha Lab\nBeta Institute", "a@alpha.example.com, b@beta.example.org", "Germany\nFrance"],
+    ]);
+    expect(r.format).toBe("과제별");
+    const insts = r.projects[0].institutions;
+    expect(insts.map((i) => [i.name, i.role, i.emails.join(), i.country])).toEqual([
+      ["(주)테스트", "주관기관", "lead@test.example.kr", ""],
+      ["Alpha Lab", "참여기관", "a@alpha.example.com", "Germany"],
+      ["Beta Institute", "참여기관", "b@beta.example.org", "France"],
+    ]);
+    expect(insts[1].foreign).toBe(true);
   });
 
   it("과제번호·과제명 열이 없으면 알려준다", () => {
@@ -47,14 +93,14 @@ describe("과제 목록 불러오기", () => {
   });
 
   it("No 열이 있어도 과제번호 열을 쓴다", () => {
-    const r = rowsToProjects([["No", "과제번호", "과제명"], ["1", "P1", "테스트 과제"]]);
+    const r = rowsToProjects([["No", "과제번호", "과제제목", "기관명"], ["1", "P1", "테스트 과제", "가기관"]]);
     expect(r.projects[0].id).toBe("P1");
   });
 });
 
 describe("메일 읽기", () => {
   it("zip 안의 .eml을 모두 읽는다", () => {
-    expect(mails).toHaveLength(43);
+    expect(mails).toHaveLength(45);
     const { mail } = bySource("P0031001_finance.eml");
     expect(mail.subject).toContain("재무증빙");
     expect(mail.attachments.map((a) => a.filename)).toContain("감사보고서.pdf");
@@ -139,13 +185,31 @@ describe("서류 종류", () => {
 });
 
 describe("정리 결과", () => {
-  it("과제별 제출 현황", () => {
+  it("메일을 보낸 기관까지 찾는다", () => {
+    expect(bySource("P0031001_finance.eml").result.institutionKey).toBe("P0031001::(주)한빛로보틱스");
+    expect(bySource("P0031001_loc.eml").result.institutionKey).toBe("P0031001::Nordlicht Institute of Technology");
+    expect(bySource("P0031015_colleague.eml").result.institutionReason).toContain("도메인");
+    expect(bySource("P0031019_gmail.eml").result.institutionReason).toContain("기관명");
+  });
+
+  it("기관별 제출 현황과 독촉 대상", () => {
     const st = projectStatus(mails, results, projects, DEFAULT_SETTINGS);
     const get = (id: string) => st.find((s) => s.project.id === id)!;
     expect(get("P0031001").state).toBe("완료");
-    expect(get("P0031009").state).toBe("일부 제출");
-    expect(get("P0031009").missing).toEqual(["재무증빙"]);
-    expect(get("P0031025").state).toBe("미제출");
+    // 3번째 기관(국내 대학)이 참여확약서를 내지 않음
+    const p8 = get("P0031008");
+    expect(p8.state).toBe("일부 제출");
+    const univ = p8.institutions.find((i) => i.institution.role === "참여기관" && !i.institution.foreign)!;
+    expect(univ.remindDocs).toEqual(["참여확약서"]);
+    // 주관기관 재무증빙 미제출
+    const p9 = get("P0031009");
+    expect(p9.institutions.find((i) => i.institution.role === "주관기관")!.remindDocs).toEqual(["재무증빙"]);
+    expect(p9.institutions.find((i) => i.institution.role === "참여기관")!.remindDocs).toEqual([]);
+    // 아무것도 안 낸 과제: 과제 공통(협약서)은 주관기관 독촉에 포함
+    const p25 = get("P0031025");
+    expect(p25.state).toBe("미제출");
+    expect(p25.commonMissing).toEqual(["협약서"]);
+    expect(p25.institutions.find((i) => i.institution.role === "주관기관")!.remindDocs).toEqual(["재무증빙", "협약서"]);
   });
 
   it("폴더·파일 이름 규칙", () => {
@@ -176,8 +240,9 @@ describe("정리 결과", () => {
     const xlsxName = names.find((n) => n.endsWith(".xlsx"))!;
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load((await z.file(xlsxName)!.async("uint8array")).buffer as ArrayBuffer);
-    expect(wb.worksheets.map((w) => w.name)).toEqual(["제출현황", "메일목록", "첨부파일목록"]);
-    expect(wb.getWorksheet("제출현황")!.rowCount).toBe(31);
-    expect(wb.getWorksheet("메일목록")!.rowCount).toBe(44);
+    expect(wb.worksheets.map((w) => w.name)).toEqual(["기관별제출현황", "과제별요약", "메일목록", "첨부파일목록"]);
+    expect(wb.getWorksheet("기관별제출현황")!.rowCount).toBe(1 + 60 + 6);
+    expect(wb.getWorksheet("과제별요약")!.rowCount).toBe(31);
+    expect(wb.getWorksheet("메일목록")!.rowCount).toBe(46);
   });
 });

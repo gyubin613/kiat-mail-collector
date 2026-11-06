@@ -8,6 +8,5 @@ export function GET() {
     enabled: cfg.provider !== "none",
     provider: cfg.provider,
     label: cfg.label,
-    passwordRequired: !!process.env.APP_PASSWORD,
   });
 }
