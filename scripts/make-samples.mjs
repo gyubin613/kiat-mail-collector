@@ -375,13 +375,152 @@ noise.forEach(([name, from, subject, body], i) =>
   add(`noise_${i + 1}.eml`, { fromName: name, from, subject, body, date: day(31 + i * 2, 13, i) }),
 );
 
-async function writeMails() {
+// ---------- 2차 묶음: 1주 뒤 추가로 들어온 메일 (누적 접수대장 확인용) ----------
+const mails2 = [];
+const add2 = (name, m) => mails2.push({ name, content: eml(m) });
+const copy1 = (name) => {
+  const m = mails.find((x) => x.name === name);
+  if (!m) throw new Error(`1차 메일 없음: ${name}`);
+  mails2.push({ name, content: m.content });
+};
+
+// (1) 1차에 있던 메일을 실수로 다시 올림 → 건너뛰어야 함
+copy1("P0031001_loc.eml");
+copy1("P0031002_finance.eml");
+copy1("noise_1.eml");
+
+// (2) 보완 요청을 받고 서명본을 다시 보냄 → 참여확약서 2차 제출, 점검 '이상 없어 보임'
+{
+  const p = projects[9];
+  add2(`${p.id}_loc_signed_again.eml`, {
+    fromName: p.partnerName, from: p.partnerEmail,
+    subject: `RE: [KIAT] Revision needed for project ${p.id} (Letter of Commitment)`,
+    body: `Dear KIAT team,\n\nThank you for your review. Please find the signed and dated Letter of Commitment attached.\n\nBest regards,\n${p.partnerName}\n${p.partnerOrg}`,
+    date: day(41, 16, 20), attachments: [loc(p, true)],
+  });
+}
+
+// (3) 국내 참여기관(대학)이 참여확약서를 보냄 → 미제출 기관이 줄어듦
+for (const i of [2, 7]) {
+  const p = projects[i];
+  const u = UNIVS[i % 3];
+  add2(`${p.id}_univ_loc.eml`, {
+    fromName: "김연구", from: `pi${i}@univ${i % 3}.example.ac.kr`,
+    subject: `[${p.id}] 참여확약서 제출`,
+    body: `안녕하세요. ${u} 김연구입니다.\n\n${p.name} 과제 참여확약서를 제출합니다.\n\n감사합니다.`,
+    date: day(40 + i, 11, 0),
+    attachments: [{ name: `참여확약서_${u.replace(/\s+/g, "")}.pdf`, data: fakePdf("Participation Commitment", [`Project: ${p.id}`, "Signed by director", "Date: 2026-12-09"]) }],
+  });
+}
+
+// (4) 주관기관이 재무증빙을 보냄 (과제번호는 본문에만) → 과제 완료
+{
+  const p = projects[8];
+  add2(`${p.id}_finance_late.eml`, {
+    fromName: p.leadName, from: p.leadEmail,
+    subject: "요청하신 서류 보내드립니다",
+    body: `안녕하세요, ${p.leadOrg} ${p.leadName}입니다.\n과제번호 ${p.id} 관련 재무증빙(재무제표, 감사보고서) 첨부합니다.\n\n감사합니다.`,
+    date: day(42, 9, 40), attachments: fin(p),
+  });
+}
+
+// (5) 해외기관이 워드 파일로 보냄 → 서류 종류는 분류되지만 점검은 '직접 확인'
+{
+  const p = projects[13];
+  add2(`${p.id}_docx.eml`, {
+    fromName: p.partnerName, from: p.partnerEmail,
+    subject: `[${p.id}] Revised Letter of Commitment (Word)`,
+    body: `Dear KIAT team,\n\nPlease find the revised letter in Word format. A signed PDF will follow.\n\nBest,\n${p.partnerName}`,
+    date: day(43, 18, 30),
+    attachments: [{ name: `Letter_of_Commitment_${p.id}_revised.docx`, type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", data: Buffer.from("PK\u0003\u0004 demo docx (가상 파일)", "utf8") }],
+  });
+}
+
+// (6) 같은 확약서를 또 보냄 → '앞서 받은 파일과 같음'
+{
+  const p = projects[4];
+  add2(`${p.id}_loc_dup_again.eml`, {
+    fromName: p.partnerName, from: p.partnerEmail,
+    subject: `Fwd: Fwd: [${p.id}] Signed Letter of Commitment`,
+    body: `Just making sure you received this.\n\n${p.partnerName}`,
+    date: day(44, 8, 10), attachments: [loc(p, true)],
+  });
+}
+
+// (7) 모르는 주소에서 영문 과제명만 적어 보냄 → 미분류, 직접 지정
+add2("unknown_english_title.eml", {
+  fromName: "Grant Admin", from: "grant.admin@university-mail.example.org",
+  subject: "Signed agreement",
+  body: "Hello,\n\nAttached is the signed agreement for the project on wearable biosignal monitoring.\n\nRegards,\nGrant Admin",
+  date: day(44, 13, 0),
+  attachments: [{ name: "agreement_signed.pdf", data: fakePdf("Agreement", ["Signed by both parties", "Date: 2026-12-10"]) }],
+});
+
+// (8) 업무와 무관한 자동 회신 → 대상 아님
+add2("noise_autoreply.eml", {
+  fromName: "Mail Delivery", from: "postmaster@mail.example.com",
+  subject: "Automatic reply: Holiday notice",
+  body: "Our office is closed from 24 December to 2 January.",
+  date: day(45, 7, 0),
+});
+
+// 과제별로 한 줄인 표(가로형) — 같은 과제를 다른 형식으로 (불러오기 확인용)
+async function writeWideList() {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("과제별현황");
+  ws.columns = [
+    { header: "과제번호", key: "id", width: 12 },
+    { header: "과제명", key: "name", width: 38 },
+    { header: "영문 과제명", key: "nameEn", width: 46 },
+    { header: "주관기관", key: "lead", width: 20 },
+    { header: "주관기관 이메일", key: "leadEmail", width: 32 },
+    { header: "주관기관 대표전화", key: "tel", width: 16 },
+    { header: "참여기관", key: "partners", width: 40 },
+    { header: "국가", key: "countries", width: 14 },
+    { header: "참여기관 이메일", key: "partnerEmails", width: 44 },
+    { header: "법인등록번호", key: "corp", width: 16 },
+    { header: "담당자", key: "manager", width: 9 },
+    { header: "연도", key: "year", width: 7 },
+  ];
+  projects.forEach((p, i) => {
+    const topicIdx = (i + Math.floor(i / 10)) % 10;
+    const variantEn = ["", " (advanced)", " (demonstration)"][Math.floor(i / 10)];
+    const partners = [p.partnerOrg];
+    const countries = [p.country];
+    const emails = [p.partnerEmail];
+    if (i % 5 === 2) {
+      partners.push(UNIVS[i % 3]);
+      countries.push("대한민국");
+      emails.push(`pi${i}@univ${i % 3}.example.ac.kr`);
+    }
+    const row = ws.addRow({
+      id: p.id,
+      name: p.name,
+      nameEn: TOPICS_EN[topicIdx] + variantEn,
+      lead: p.leadOrg,
+      leadEmail: p.leadEmail,
+      tel: `02-${3000 + i}-${String(1000 + i).padStart(4, "0")}`,
+      partners: partners.join("\n"),
+      countries: countries.join("\n"),
+      partnerEmails: emails.join(", "),
+      corp: `110111-${String(1234567 + i)}`,
+      manager: p.manager,
+      year: p.year,
+    });
+    row.alignment = { wrapText: true, vertical: "top" };
+  });
+  ws.getRow(1).font = { bold: true };
+  await wb.xlsx.writeFile(join(OUT, "과제관리현황_가상_과제별형식.xlsx"));
+}
+
+async function writeZip(list, file) {
   const zip = new JSZip();
-  for (const m of mails) zip.file(m.name, m.content);
-  const buf = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
-  writeFileSync(join(OUT, "가상메일.zip"), buf);
+  for (const m of list) zip.file(m.name, m.content);
+  writeFileSync(join(OUT, file), await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }));
 }
 
 await writeProjectList();
-await writeMails();
-console.log(`과제 ${projects.length}개, 메일 ${mails.length}통 생성 → ${OUT}`);
+await writeWideList();
+await writeZip(mails, "가상메일.zip");
+await writeZip(mails2, "가상메일_2차.zip");
+console.log(`과제 ${projects.length}개, 메일 1차 ${mails.length}통·2차 ${mails2.length}통 생성 → ${OUT}`);
