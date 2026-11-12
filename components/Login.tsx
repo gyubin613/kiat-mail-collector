@@ -8,7 +8,13 @@ interface DeptInfo {
   demo: boolean;
 }
 
-export function Login({ onDone }: { onDone: () => void }) {
+interface SetupProblem {
+  key: string;
+  message: string;
+}
+
+export function Login({ onDone, notice }: { onDone: () => void; notice?: string }) {
+  const [setup, setSetup] = useState<SetupProblem[]>([]);
   const [depts, setDepts] = useState<DeptInfo[]>([]);
   const [adminEnabled, setAdminEnabled] = useState(false);
   const [mode, setMode] = useState<"member" | "admin">("member");
@@ -19,10 +25,11 @@ export function Login({ onDone }: { onDone: () => void }) {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    api<{ depts: DeptInfo[]; adminEnabled: boolean }>("/api/auth/depts")
+    api<{ depts: DeptInfo[]; adminEnabled: boolean; setup?: SetupProblem[] }>("/api/auth/depts")
       .then((d) => {
         setDepts(d.depts);
         setAdminEnabled(d.adminEnabled);
+        setSetup(d.setup ?? []);
         setDept((cur) => cur || d.depts.find((x) => !x.demo)?.code || d.depts[0]?.code || "");
       })
       .catch((e) => setError((e as Error).message));
@@ -63,6 +70,20 @@ export function Login({ onDone }: { onDone: () => void }) {
       <form className="login-card" onSubmit={submit}>
         <h1 className="title">과제 서류 메일 정리 도우미</h1>
         <p className="subtitle">K-PASS 밖에서 메일로 받는 과제 서류를 실별 접수대장으로 관리합니다.</p>
+        {setup.length > 0 && (
+          <div className="setup-alert" role="alert">
+            <b>배포 설정이 끝나지 않았습니다</b>
+            <ul>
+              {setup.map((p) => (
+                <li key={p.key}>{p.message}</li>
+              ))}
+            </ul>
+            <p>
+              Vercel 프로젝트의 Settings → Environment Variables에 {setup.map((p) => (p.key === "UPSTASH_REDIS_REST_URL" ? "UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN" : p.key)).join(", ")}을(를) 넣고 Redeploy 해 주세요.
+            </p>
+          </div>
+        )}
+        {notice && !setup.length && <p className="note">{notice}</p>}
 
         {mode === "member" ? (
           <>

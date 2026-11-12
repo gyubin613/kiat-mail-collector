@@ -83,7 +83,7 @@ K-PASS로 받을 수 없는 서류와 K-PASS 마감기(11월 말~연초)에 메�
 | `AI_PROVIDER=internal` + `AI_BASE_URL` + `AI_MODEL` | 기관 내부 이관: 내부 서버의 OpenAI 호환 모델 서버(vLLM·Ollama 등) 사용 |
 | `AI_API_KEY` | 내부 모델 서버에 인증이 필요할 때 |
 | `UPSTASH_REDIS_REST_URL` `UPSTASH_REDIS_REST_TOKEN` | 실별 접수대장 저장소. **Vercel에서는 필수** (없으면 시연용 메모리) |
-| `SESSION_SECRET` | 로그인 세션 서명 |
+| `SESSION_SECRET` | 로그인 세션 서명. **Vercel에서는 필수** — 없으면 로그인해도 바로 "로그인이 필요합니다"가 뜸 (로그인 화면에 빠진 설정이 표시됨) |
 | `ADMIN_PASSWORD` | 실 관리 화면 |
 | `DEMO_DISABLED=1` | 체험용 실 숨기기 |
 | `IMAP_HOST` `IMAP_PORT` `IMAP_USER` `IMAP_PASS` | 수집 메일함. 실별 폴더는 [실 설정]에서 지정 |

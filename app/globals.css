@@ -1084,6 +1084,21 @@ a.btn {
   font-size: 14px;
   background: var(--sheet);
 }
+.setup-alert {
+  background: var(--bad-wash);
+  color: var(--bad);
+  border-radius: var(--radius-s);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.setup-alert ul {
+  margin: 6px 0;
+  padding-left: 18px;
+}
+.setup-alert p {
+  margin: 0;
+  color: var(--ink-soft);
+}
 .login-card .note {
   margin: 0;
   font-size: 12.5px;

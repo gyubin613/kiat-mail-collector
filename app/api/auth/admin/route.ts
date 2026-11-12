@@ -1,10 +1,13 @@
 import { timingSafeEqual } from "node:crypto";
 import { encodeSession, loginBlocked, loginFailed, loginSucceeded, sessionCookie } from "@/lib/server/auth";
 import { bad, readJson } from "@/lib/server/http";
+import { setupErrorResponse } from "@/lib/server/setup";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  const notReady = setupErrorResponse();
+  if (notReady) return notReady;
   const pw = process.env.ADMIN_PASSWORD;
   if (!pw) return bad("관리자 비밀번호(ADMIN_PASSWORD)가 설정되지 않았습니다.", 503);
   if (loginBlocked("__admin")) return bad("비밀번호가 여러 번 틀려 10분 동안 로그인할 수 없습니다.", 429);
