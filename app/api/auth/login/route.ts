@@ -1,10 +1,13 @@
 import { encodeSession, loginBlocked, loginFailed, loginSucceeded, sessionCookie, verifyPassword } from "@/lib/server/auth";
 import { getDept, publicDept } from "@/lib/server/depts";
 import { bad, readJson } from "@/lib/server/http";
+import { setupErrorResponse } from "@/lib/server/setup";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  const notReady = setupErrorResponse();
+  if (notReady) return notReady;
   const body = await readJson<{ dept?: string; password?: string; user?: string }>(req);
   const code = String(body?.dept ?? "").trim().toUpperCase();
   const user = String(body?.user ?? "").replace(/[\r\n]/g, "").trim().slice(0, 40);
